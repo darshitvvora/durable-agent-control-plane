@@ -1,0 +1,38 @@
+# Agent manifest — the whole contract for a new agent.
+# Copy this folder to agents/<your_id>/, edit these fields, write the SOP, publish.
+# No workflow code, no UI code (CLAUDE.md §2).
+
+id: my-agent # must match the folder name (underscores become dashes)
+name: My Agent
+version: 1
+
+# 1 = SOP only (no code) · 2 = SOP + custom activity tools · 3 = hosted on AgentCore Runtime
+tier: "1"
+
+# A key in the worker's model registry, NOT a Bedrock model id.
+# See app/temporal_client.py: bedrock-claude | bedrock-nova
+model: bedrock-claude
+
+# Tool names resolved against app/activities/catalog.py TOOL_CATALOG.
+# An unknown name fails the job non-retryably rather than running a toolless agent.
+tools: []
+
+# AgentCore Gateway MCP servers (E7.1).
+mcp_servers: []
+
+# Defaults for {{placeholders}} in procedure.sop.md. Runtime context
+# (tenant_id, agent_id, agent_version, job_id) overrides these per job.
+parameters:
+  escalation_threshold_usd: "200"
+
+# Pause for a human before a matching tool call. Declarative on purpose —
+# no expression strings, so nothing is eval'd inside workflow code.
+# operator: gt | gte | lt | lte | eq | ne
+# approval_policy:
+#   tool: issue_payment
+#   field: amount_usd
+#   operator: gt
+#   value: 200
+
+# guardrail_arn: arn:aws:bedrock:...:guardrail/...
+# output_model: MyDecision

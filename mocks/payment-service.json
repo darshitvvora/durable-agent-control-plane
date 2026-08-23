@@ -1,0 +1,70 @@
+{
+  "uuid": "8f3c1a20-0000-4000-8000-000000000001",
+  "lastMigration": 33,
+  "name": "Payment Service",
+  "endpointPrefix": "",
+  "latency": 0,
+  "port": 3001,
+  "hostname": "",
+  "folders": [],
+  "routes": [
+    {
+      "uuid": "8f3c1a20-0000-4000-8000-000000000020",
+      "type": "crud",
+      "documentation": "POST /payments records a payment. Every call is counted — no dedupe here on purpose: the mock counts what actually reached the provider, so the proof-3 counter measures reality, not our bookkeeping.",
+      "method": "",
+      "endpoint": "payments",
+      "responses": [
+        {
+          "uuid": "8f3c1a20-0000-4000-8000-000000000021",
+          "body": "{}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "payments crud",
+          "headers": [{ "key": "Content-Type", "value": "application/json" }],
+          "bodyType": "DATABUCKET",
+          "filePath": "",
+          "databucketID": "pay",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "confirmation_id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    }
+  ],
+  "rootChildren": [{ "type": "route", "uuid": "8f3c1a20-0000-4000-8000-000000000020" }],
+  "proxyMode": false,
+  "proxyHost": "",
+  "proxyRemovePrefix": false,
+  "tlsOptions": {
+    "enabled": false,
+    "type": "CERT",
+    "pfxPath": "",
+    "certPath": "",
+    "keyPath": "",
+    "caPath": "",
+    "passphrase": ""
+  },
+  "cors": true,
+  "headers": [{ "key": "Content-Type", "value": "application/json" }],
+  "proxyReqHeaders": [{ "key": "", "value": "" }],
+  "proxyResHeaders": [{ "key": "", "value": "" }],
+  "data": [
+    {
+      "uuid": "8f3c1a20-0000-4000-8000-000000000030",
+      "id": "pay",
+      "name": "payments",
+      "documentation": "Every recorded payment invocation.",
+      "value": "[]"
+    }
+  ],
+  "callbacks": []
+}
