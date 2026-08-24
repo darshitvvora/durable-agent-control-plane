@@ -139,4 +139,38 @@ Data buckets are in-memory per server run, so restarting Mockoon resets the coun
 
 ---
 
+## 2026-08-24 — Temporal Cloud: `TenantId` custom search attribute (E5.1)
+
+The process monitor's per-tenant running-job counts come from Temporal's own visibility store (`count_workflows`, grouped by tenant) rather than a parallel DynamoDB tally — nothing marks a job "finished" today, so a DynamoDB-only count could only ever climb. That query needs a custom search attribute registered on the namespace first; the API key used for day-to-day client/worker auth cannot create one (`Request unauthorized` on `search-attribute add`/`list`), so this is a one-time step run with `tcld` (a namespace-admin-scoped tool, separate from the API key).
+
+**Prerequisite:** `tcld login` once, authenticated as a user with admin rights on the `agent-control-plane.a2dd6` namespace. Install: `brew install temporalio/brew/tcld` (or see `https://docs.temporal.io/cloud/tcld`).
+
+**Console click-path:** temporal.io Cloud UI → Namespaces → `agent-control-plane` → Search Attributes → Add custom search attribute → name `TenantId`, type `Keyword` → Save.
+
+**CLI fallback:**
+
+```bash
+tcld namespace search-attributes add \
+  --namespace agent-control-plane.a2dd6 \
+  --search-attribute "TenantId=Keyword"
+```
+
+This returns an async `UpdateNamespace` operation; it typically finishes within 10–30 seconds. Confirm it landed with a real count query (the API key can query search attributes once they exist, even though it can't create them):
+
+```bash
+uv run python -c "
+import asyncio
+from app.temporal_client import connect
+async def main():
+    c = await connect()
+    r = await c.count_workflows('WorkflowType = \"AgentJobWorkflow\" AND TenantId = \"acme\"')
+    print('ok, count =', r.count)
+asyncio.run(main())
+"
+```
+
+Until this attribute exists, `GET /api/metrics/lanes` still works — it reports `running: null` per tenant (rendered as `?` in the process monitor) rather than a wrong number, and the DynamoDB-backed `queued` count and p95 wait are unaffected. Nothing in this repo requires the attribute to be added before other stories proceed; it only unlocks real per-tenant running counts.
+
+---
+
 <!-- Next manual steps land here as we build E7.1 (Guardrails, AgentCore Gateway/Memory/Identity), E7.2 (AgentCore Code Interpreter, S3 bucket), E7.3 (AgentCore Runtime), and E9 (IAM roles, Lambda, App Runner, Amplify). -->

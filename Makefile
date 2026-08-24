@@ -1,5 +1,5 @@
-.PHONY: worker api ui mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
-	verify-tenant-priority \
+.PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
+	verify-tenant-priority verify-streaming verify-agents \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
@@ -15,6 +15,11 @@ api:
 
 ui:
 	cd ui && npm run dev
+
+# needs `make worker`, `make api`, `make mockoon`, and `make ui` all running —
+# drives the real UI against the real stack, no mocks (docs/DECISIONS.md, E5.1)
+e2e:
+	cd ui && npm run e2e
 
 # npx avoids a global install; the desktop app can open the same collection file
 mockoon:
@@ -44,6 +49,14 @@ verify-interrupt:
 # needs `make worker` running
 verify-tenant-priority:
 	uv run python -m scripts.verify_tenant_priority
+
+# needs `make worker`, `make api`, and Mockoon running
+verify-streaming:
+	uv run python -m scripts.verify_streaming
+
+# needs `make worker` and Mockoon running
+verify-agents:
+	uv run python -m scripts.verify_reference_agents
 
 # non-determinism guard — replays real histories from Temporal Cloud (script lands with E1.1)
 replay:

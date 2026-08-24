@@ -1,5 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
+from app.registry import fleet
 from app.registry import repository as repo
 from app.registry.metrics import tenant_wait_p95
 
@@ -10,3 +11,21 @@ router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 def fleet_metrics() -> dict[str, float | None]:
     """Every tenant's current p95 wait, in seconds (proof 1)."""
     return {t.tenant_id: tenant_wait_p95(t.tenant_id) for t in repo.list_tenants()}
+
+
+@router.get("/lanes")
+async def lanes(request: Request) -> list[fleet.Lane]:
+    """Per-tenant lanes for the process monitor: running, queued, p95, tier."""
+    return await fleet.lanes(request.app.state.temporal_client)
+
+
+@router.get("/status")
+async def status(request: Request) -> dict:
+    """Status-strip numbers. Only what is really measurable today — sandbox
+    count, S3 offload and version ramp land with E7.2/E6.1."""
+    client = request.app.state.temporal_client
+    return {
+        "workers": await fleet.worker_count(client),
+        "jobs_by_status": await fleet.status_counts(client),
+        "fairness_enabled": repo.get_fairness_setting().enabled,
+    }

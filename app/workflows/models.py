@@ -30,6 +30,20 @@ class JobOutcome(BaseModel):
     output: str
 
 
+class SessionState(BaseModel):
+    """A point-in-time snapshot of a session, for the UI's polled fallback when
+    the event stream is unavailable (E4.2 T3). Every field comes from a real
+    Temporal call — describe() for status and version, a workflow query for the
+    pending approval — never from cached or synthesised state.
+    """
+
+    job_id: str
+    status: str
+    # The session's worker deployment version — proof 2's per-session version badge.
+    worker_version: str | None = None
+    pending_approval: PendingApproval | None = None
+
+
 class UIEvent(BaseModel):
     """One item on AgentJobWorkflow's Workflow Stream (E4.1) — published
     directly from workflow code, delivered to SSE subscribers in order by the

@@ -1,0 +1,21 @@
+id: incident-triage
+name: Incident Triage
+version: 1
+
+# Tier 1 — SOP only, no tools. The agent reasons and recommends; a human or a
+# downstream system carries the recommendation out. This is also the flood
+# generator for proof 1 (`dos demo flood`), so keeping it toolless keeps 200
+# concurrent jobs fast and cheap.
+tier: "1"
+
+model: bedrock-claude
+
+tools: []
+
+mcp_servers: []
+
+parameters:
+  # A deploy older than this is unlikely to be the cause, so the SOP stops
+  # blaming it and says so instead of guessing.
+  deploy_window_minutes: "60"
+  severity_floor: "sev3"

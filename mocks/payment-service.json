@@ -1,7 +1,7 @@
 {
   "uuid": "8f3c1a20-0000-4000-8000-000000000001",
   "lastMigration": 33,
-  "name": "Payment Service",
+  "name": "Demo Services",
   "endpointPrefix": "",
   "latency": 0,
   "port": 3001,
@@ -11,7 +11,7 @@
     {
       "uuid": "8f3c1a20-0000-4000-8000-000000000020",
       "type": "crud",
-      "documentation": "POST /payments records a payment. Every call is counted — no dedupe here on purpose: the mock counts what actually reached the provider, so the proof-3 counter measures reality, not our bookkeeping.",
+      "documentation": "POST /payments records a payment. Every call is counted \u2014 no dedupe here on purpose: the mock counts what actually reached the provider, so the proof-3 counter measures reality, not our bookkeeping.",
       "method": "",
       "endpoint": "payments",
       "responses": [
@@ -21,7 +21,12 @@
           "latency": 0,
           "statusCode": 200,
           "label": "payments crud",
-          "headers": [{ "key": "Content-Type", "value": "application/json" }],
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
           "bodyType": "DATABUCKET",
           "filePath": "",
           "databucketID": "pay",
@@ -38,9 +43,94 @@
       "responseMode": null,
       "streamingMode": null,
       "streamingInterval": 0
+    },
+    {
+      "uuid": "8f3c1a20-0000-4000-8000-000000000040",
+      "type": "http",
+      "documentation": "GET /disputes/:id/evidence returns what is known about a chargeback. Read-only; the Dispute Resolution agent calls this before deciding.",
+      "method": "get",
+      "endpoint": "disputes/:id/evidence",
+      "responses": [
+        {
+          "uuid": "8f3c1a20-0000-4000-8000-000000000041",
+          "body": "{\n  \"dispute_id\": \"{{urlParam 'id'}}\",\n  \"reason_code\": \"{{oneOf (array 'product_not_received' 'product_unacceptable' 'fraudulent')}}\",\n  \"amount_usd\": {{faker 'number.int' min=40 max=900}},\n  \"merchant\": \"Globex Retail\",\n  \"cardholder_claim\": \"Cardholder states the order never arrived.\",\n  \"prior_disputes\": {{faker 'number.int' min=0 max=3}},\n  \"delivery_confirmed\": {{oneOf (array 'true' 'false')}}\n}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "evidence found",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "INLINE",
+          "filePath": "",
+          "databucketID": "",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
+    },
+    {
+      "uuid": "8f3c1a20-0000-4000-8000-000000000050",
+      "type": "crud",
+      "documentation": "POST /dispute-responses records a filed accept/contest decision. Like /payments, every call is counted with no dedupe here on purpose, so the counter measures what actually reached the network.",
+      "method": "",
+      "endpoint": "dispute-responses",
+      "responses": [
+        {
+          "uuid": "8f3c1a20-0000-4000-8000-000000000051",
+          "body": "{}",
+          "latency": 0,
+          "statusCode": 200,
+          "label": "dispute-responses crud",
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "bodyType": "DATABUCKET",
+          "filePath": "",
+          "databucketID": "dis",
+          "sendFileAsBody": false,
+          "rules": [],
+          "rulesOperator": "OR",
+          "disableTemplating": false,
+          "fallbackTo404": false,
+          "default": true,
+          "crudKey": "case_id",
+          "callbacks": []
+        }
+      ],
+      "responseMode": null,
+      "streamingMode": null,
+      "streamingInterval": 0
     }
   ],
-  "rootChildren": [{ "type": "route", "uuid": "8f3c1a20-0000-4000-8000-000000000020" }],
+  "rootChildren": [
+    {
+      "type": "route",
+      "uuid": "8f3c1a20-0000-4000-8000-000000000020"
+    },
+    {
+      "type": "route",
+      "uuid": "8f3c1a20-0000-4000-8000-000000000040"
+    },
+    {
+      "type": "route",
+      "uuid": "8f3c1a20-0000-4000-8000-000000000050"
+    }
+  ],
   "proxyMode": false,
   "proxyHost": "",
   "proxyRemovePrefix": false,
@@ -54,15 +144,37 @@
     "passphrase": ""
   },
   "cors": true,
-  "headers": [{ "key": "Content-Type", "value": "application/json" }],
-  "proxyReqHeaders": [{ "key": "", "value": "" }],
-  "proxyResHeaders": [{ "key": "", "value": "" }],
+  "headers": [
+    {
+      "key": "Content-Type",
+      "value": "application/json"
+    }
+  ],
+  "proxyReqHeaders": [
+    {
+      "key": "",
+      "value": ""
+    }
+  ],
+  "proxyResHeaders": [
+    {
+      "key": "",
+      "value": ""
+    }
+  ],
   "data": [
     {
       "uuid": "8f3c1a20-0000-4000-8000-000000000030",
       "id": "pay",
       "name": "payments",
       "documentation": "Every recorded payment invocation.",
+      "value": "[]"
+    },
+    {
+      "uuid": "8f3c1a20-0000-4000-8000-000000000031",
+      "id": "dis",
+      "name": "dispute-responses",
+      "documentation": "Every recorded dispute-response filing.",
       "value": "[]"
     }
   ],

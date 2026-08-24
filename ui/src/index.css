@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@import "@fontsource-variable/archivo";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/* Industrial workstation chrome.
+ *
+ * Warm-grey chassis carrying recessed near-black wells. Every surface is either
+ * raised (a control you can press) or sunken (a place data lives) — never flat,
+ * never rounded. Colour is reserved: the chassis is grey, data is bone-white,
+ * and the two signal hues appear ONLY where state has changed, so on a
+ * conference screen the eye is pulled to movement rather than decoration.
+ */
+@theme {
+  --color-chrome: #ada89e;
+  --color-chrome-hi: #dcd7cb;
+  --color-chrome-lo: #67625a;
+  --color-well: #17170f;
+  --color-well-hi: #24241a;
+  --color-ink: #efe9d8;
+  --color-ink-dim: #8f8b7c;
+  --color-signal: #ff9e1b;
+  --color-alert: #d6472f;
+
+  --font-display: "Archivo Variable", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-chrome);
+    color: #16140f;
+    font-family: var(--font-display);
+    /* Stage legibility (E5.2). Measured floor is 13px, and only secondary
+     * labels sit there — column headers and units. Everything a viewer ten
+     * metres back actually needs to read is 20px or larger, and the two
+     * numbers the proofs turn on (p95 wait, lane load) are the largest things
+     * on screen. */
+    font-size: 18px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Keyboard focus has to survive the bevel treatment. */
+  :focus-visible {
+    outline: 3px solid var(--color-signal);
+    outline-offset: 1px;
+  }
+}
+
+/* The signature: a real 3px hard bevel, light from the top-left. Two nested
+ * box-shadows rather than borders, so the panel edge stays pixel-crisp at any
+ * zoom and the chassis reads as physical. Declared as utilities so components
+ * can both use them directly and @apply them. */
+@utility raised {
+  box-shadow:
+    inset 3px 3px 0 0 var(--color-chrome-hi),
+    inset -3px -3px 0 0 var(--color-chrome-lo);
+}
+
+@utility sunken {
+  box-shadow:
+    inset 3px 3px 0 0 var(--color-chrome-lo),
+    inset -3px -3px 0 0 var(--color-chrome-hi);
+}
+
+@layer components {
+  /* Pressing genuinely inverts the bevel — the control moves. */
+  .btn {
+    @apply raised bg-chrome px-4 py-2 font-display text-[16px] font-semibold tracking-[0.14em] uppercase;
+    color: #16140f;
+  }
+  .btn:hover:not(:disabled) {
+    background: #b9b4aa;
+  }
+  .btn:active:not(:disabled) {
+    @apply sunken;
+    padding: calc(0.5rem + 1px) calc(1rem - 1px) calc(0.5rem - 1px) calc(1rem + 1px);
+  }
+  .btn:disabled {
+    color: var(--color-chrome-lo);
+  }
+
+  /* Panel title bars: the one place uppercase tracking is heavy, so a viewer
+   * ten metres back can find a pane by its header alone. */
+  .titlebar {
+    @apply font-display text-[15px] font-bold tracking-[0.22em] uppercase;
+  }
+}
+
+/* Data that streams should not animate its own arrival — the content moving is
+ * the signal. Only deliberate state flips animate. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.caret {
+  animation: blink 1.06s steps(1) infinite;
+}

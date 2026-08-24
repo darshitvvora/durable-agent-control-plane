@@ -1,0 +1,28 @@
+id: dispute-resolution
+name: Dispute Resolution
+version: 1
+
+# Tier 2 — SOP plus custom activity tools: one read-only lookup and one
+# consequential filing.
+tier: "2"
+
+model: bedrock-claude
+
+tools:
+  - fetch_dispute_evidence
+  - submit_dispute_response
+
+mcp_servers: []
+
+parameters:
+  # Contesting is only worth the fee below this; above it a human decides.
+  review_threshold_usd: "500"
+  repeat_claim_limit: "2"
+
+# Filing a response on a high-value chargeback pauses for a human reviewer.
+# Same declarative shape as invoice-exception's payment gate.
+approval_policy:
+  tool: submit_dispute_response
+  field: amount_usd
+  operator: gt
+  value: 500

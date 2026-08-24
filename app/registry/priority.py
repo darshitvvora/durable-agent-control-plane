@@ -6,9 +6,29 @@ by every workflow-starting call site (`dos agent test`, the future API in E4,
 `dos demo flood` in E3.2) without duplicating the lookup-or-fail behaviour.
 """
 
-from temporalio.common import Priority
+from temporalio.common import (
+    Priority,
+    SearchAttributeKey,
+    SearchAttributePair,
+    TypedSearchAttributes,
+)
 
 from app.registry import repository as repo
+
+# Lets the process monitor count a tenant's open executions straight from
+# Temporal's visibility store instead of keeping a parallel tally in DynamoDB.
+# Requires the TenantId custom search attribute on the namespace — a one-time
+# setup step, see docs/AWS_SETUP.md.
+TENANT_KEY = SearchAttributeKey.for_keyword("TenantId")
+
+
+def tenant_search_attributes(tenant_id: str) -> TypedSearchAttributes:
+    """Search attributes every agent job is started with.
+
+    Client-side only, set at start_workflow — not a workflow-code change, so it
+    needs no BUILD_ID bump and old histories replay unaffected.
+    """
+    return TypedSearchAttributes([SearchAttributePair(TENANT_KEY, tenant_id)])
 
 
 def resolve_priority(tenant_id: str) -> Priority:

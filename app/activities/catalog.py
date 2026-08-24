@@ -19,6 +19,7 @@ from typing import Any
 
 from temporalio.common import RetryPolicy
 
+from app.activities.dispute import fetch_dispute_evidence, submit_dispute_response
 from app.activities.payment import issue_payment
 
 
@@ -40,6 +41,8 @@ READ_ONLY = {
 
 TOOL_CATALOG: dict[str, ToolSpec] = {
     "issue_payment": ToolSpec(activity=issue_payment, options=CONSEQUENTIAL),
+    "fetch_dispute_evidence": ToolSpec(activity=fetch_dispute_evidence, options=READ_ONLY),
+    "submit_dispute_response": ToolSpec(activity=submit_dispute_response, options=CONSEQUENTIAL),
 }
 
 

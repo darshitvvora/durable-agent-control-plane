@@ -119,9 +119,11 @@ As a demo, I have four real, runnable agents.
 **Acceptance:** all four execute real jobs; none are stubs.
 
 - [x] T1 Invoice Exception (Acme, native, tier 2) — the on-stage agent; authored via `agent init`, validated, published, and run for real
-- [ ] T2 Incident Triage (Initech, native, tier 1) — the flood generator
-- [ ] T3 Dispute Resolution (Globex, native, tier 2)
-- [ ] T4 VendorCheck (hosted, tier 3) — AgentCore Runtime lane, manifest only
+- [x] T2 Incident Triage (Initech, native, tier 1) — the flood generator. Tier 1 means SOP only, no tools: it *recommends* a rollback rather than performing one, which resolves the stub's own tier-1-plus-a-rollback-tool contradiction and keeps 200 concurrent flood jobs cheap. `dos demo flood` now uses this real published agent instead of the code-seeded `flood-load-agent`, which is deleted.
+- [x] T3 Dispute Resolution (Globex, native, tier 2) — two new tools: `fetch_dispute_evidence` (read-only, first user of the catalog's `READ_ONLY` retry class) and `submit_dispute_response` (consequential, idempotent). Approval policy gates filings above `review_threshold_usd`.
+- [!] T4 VendorCheck (hosted, tier 3) — **deferred to E7.3**, which owns the hosted lane. Needs `invoke_hosted_agent` against AgentCore Runtime plus a real deployed runtime and ARN; none exist yet, so it cannot meet this story's "executes a real job" bar. Same precedent as E3.1 T3.
+
+**Verified 2026-08-23** (`make verify-agents`, new): all three native reference agents run real jobs on Temporal Cloud against real Bedrock, each reaching the outcome its SOP specifies — incident-triage named `checkout-api v412` as the suspect deploy with zero tool activities scheduled; dispute-resolution called `fetch_dispute_evidence` then `submit_dispute_response` for exactly one filing; invoice-exception settled a below-threshold invoice via `issue_payment`. Proof 3 re-verified after extracting the shared idempotency helper (`make verify-payment`), plus `make verify-tool-call`, `make verify-interrupt`, and `make replay` clean against 18 v7 histories.
 
 ---
 
@@ -170,9 +172,11 @@ As an operator, I watch the agent reason in real time.
 
 **Acceptance:** tokens appear in the session terminal as the agent runs; interrupt is possible mid-stream.
 
-- [x] T1 `WorkflowStream` wiring — done early, as part of E4.1's corrected T2 (Experimental, labelled per CLAUDE.md §2). `AgentJobWorkflow` already hosts the stream and publishes coarse-grained events; this story's remaining work is the token-level `delta`/`tool_call`/`guardrail` topics on top of it, published from inside the model-call activity via `WorkflowStreamClient.from_within_activity()` (see `workflow_streams`'s `llm_activity.py` sample).
-- [ ] T2 Session terminal event shapes: token, tool call, guardrail verdict, memory recall
-- [ ] T3 Fallback to polled state if streams are unavailable — must not block a proof
+- [x] T1 `streaming_topic` + `WorkflowStream` wiring (Experimental, labelled per CLAUDE.md §2) — the stream itself landed with E4.1's corrected T2; this story added `TemporalAgent(streaming_topic="model_stream")`, which is first-class in the Strands plugin: it switches the model call from `invoke_model` to `invoke_model_streaming`, which publishes each Strands `StreamEvent` onto this workflow's stream via `WorkflowStreamClient.from_within_activity()`. No hand-written streaming activity — the plugin owns that. Second topic on the existing stream, since the payload type differs from `job_events`.
+- [x] T2 Session terminal event shapes: **token + tool call done**; guardrail verdict and memory recall deferred — Bedrock Guardrails (E7.1 T3) and AgentCore Memory (E7.1 T2) are unbuilt, so nothing can emit them yet; they land with their own services. Translation from raw `StreamEvent` happens in the API's SSE route (`translate_stream_event`), not the UI, so Strands' wire format never reaches the UI contract. Also emits `reasoning` (Claude's extended thinking arrives on `contentBlockDelta.delta.reasoningContent.text`, not `.text`) as a distinct kind rather than dropping it.
+- [x] T3 Fallback to polled state if streams are unavailable — server half built: `GET /api/jobs/{id}/state` returns real execution status, worker deployment version, and pending approval, from a live `describe()` plus the workflow's own query. The UI's switch-on-SSE-failure logic lands with the session terminal (E5.1 T4), since there is no UI to switch yet.
+
+**Verified 2026-08-23** (`make verify-streaming`, new): a real tool-using job streamed 18 real `token` events accumulating to coherent text, plus a `tool_call` event naming `issue_payment`, all over the real SSE route; `/state` answered `RUNNING` / `agent-control-plane:v7` mid-flight. Workflow behaviour change → `BUILD_ID` v6→v7; history now shows `invoke_model_streaming` in place of `invoke_model`. All three proofs re-verified on v7 (payment idempotency, tool-call, approve/deny interrupt — the last covers the acceptance criteria's "interrupt is possible mid-stream"), plus `make verify-tenant-priority`; `make replay` clean against 5 v7 histories.
 
 ---
 
@@ -185,20 +189,24 @@ As an audience member, I recognise an app store, a process monitor, and a termin
 
 **Acceptance:** four panes always on; legible from ten metres; no fake data.
 
-- [ ] T1 Layout shell + status strip (workers, sandboxes, S3 offloaded, ramp state)
-- [ ] T2 Agent store: installed vs available, native/hosted badge, Install
-- [ ] T3 Process monitor: per-tenant lanes, queued/running, p95, priority tier
-- [ ] T4 Session terminal: stream, tool calls, guardrail verdicts, version badge, approve/redirect
-- [ ] T5 System controls: fairness toggle, ramp slider, kill worker
+- [x] T1 Layout shell + status strip — workers and job-status counts are real (Temporal `describe_task_queue` poller count, `count_workflows` grouped by status via new `app/registry/fleet.py`); **sandboxes, S3 offloaded, and ramp state omitted**, not stubbed — their backends (E7.2, E6.1) don't exist, and CLAUDE.md §7 rules out fake numbers on a conference screen
+- [x] T2 Agent store: installed vs available (per selected tenant), native/hosted badge, tier + gated badge, Install/Remove — wired to the real `/api/agents` + `/api/tenants/{id}/install`
+- [x] T3 Process monitor: per-tenant lanes, running/queued/p95/tier, sorted busiest-first. Running counts needed a real fix, not just a UI decision: nothing previously marked a job *finished*, so DynamoDB-only counts would only ever climb — resolved by querying Temporal's own visibility store instead (`count_workflows` grouped by tenant), which needed a new `TenantId` custom search attribute added to the Temporal Cloud namespace (one-time `tcld` step, see `docs/AWS_SETUP.md`). Renders `?` rather than `0` if that attribute isn't registered yet.
+- [~] T4 Session terminal: **stream, tool calls, version badge, approve/deny — done**; guardrail verdicts still deferred (same E7.1 dependency E4.2 T2 already noted — nothing emits them yet)
+- [~] T5 System controls: **fairness toggle, flood control — done**; ramp slider and kill worker omitted for the same reason as T1's missing status tiles (E6, unbuilt) — CLAUDE.md's "no fake data" rule applies to controls, not just readouts
+
+**New:** `TenantId` Keyword search attribute added to the demo Temporal Cloud namespace via `tcld namespace search-attributes add` — a one-time, human-run setup step (`docs/AWS_SETUP.md`), consistent with CLAUDE.md §2's "AWS actions are manual and documented" rule extended to Temporal Cloud namespace config. Every job start now also carries this attribute (`app/registry/priority.tenant_search_attributes()`), client-side only — no `BUILD_ID` bump.
+
+**New:** Playwright end-to-end suite (`ui/e2e/shell.spec.ts`, `make e2e`) drives the real UI against the real API/Temporal Cloud/Bedrock — no mocks, per the 2026-08-21 decision anticipating this. Lives under `ui/e2e/` rather than the originally-noted `scripts/e2e/`, since it's an npm/Playwright-native project colocated with the frontend rather than a Python script; `make e2e` still gives it a Makefile entry point. Six specs cover: all four panes present, a real worker count, real agent/tier badges, one lane per tenant with real fairness weights, the 13px stage-legibility floor, and a full flood-to-live-stream-to-completion run through the UI's own controls.
 
 ### Story E5.2 — Stage legibility pass
 As a presenter, every state change is visible without narration.
 
 **Acceptance:** a dry run recorded and viewed at 10 m on a conference-size screen.
 
-- [ ] T1 Type scale, contrast, colour audit
-- [ ] T2 Animate the three state changes that carry the proofs
-- [ ] T3 Fix anything unreadable in the recording
+- [x] T1 Type scale, contrast, colour audit — measured via computed-style introspection (Playwright `browser_evaluate`), not eyeballed: iterated until the smallest rendered text anywhere in the shell was 13px (secondary labels only — column headers, units) and the two numbers the proofs turn on (p95 wait, lane load) are the largest things on screen. `make e2e`'s stage-floor spec makes this a regression guard, not a one-time check.
+- [ ] T2 Animate the three state changes that carry the proofs — not built. The CSS deliberately avoids decorative animation ("data that streams should not animate its own arrival"), but a deliberate treatment for lane-overtaking, the fairness toggle flip, and the version badge appearing was not designed. Real gap, not a stub.
+- [ ] T3 Fix anything unreadable in the recording — not started; needs an actual dry run on conference-scale hardware, out of scope for a single build session.
 
 ---
 
@@ -228,8 +236,8 @@ As a presenter, every state change is visible without narration.
 
 ### Story E7.1 — Gateway, Memory, Guardrails
 - [ ] T1 `TemporalMCPClient` against AgentCore Gateway; tools re-listed per turn
-- [ ] T2 AgentCore Memory, tenant-scoped recall
-- [ ] T3 Bedrock Guardrails as a deterministic activity between proposal and commit
+- [ ] T2 AgentCore Memory, tenant-scoped recall — also owns the `memory_recall` session-terminal event shape deferred from E4.2 T2
+- [ ] T3 Bedrock Guardrails as a deterministic activity between proposal and commit — also owns the `guardrail_verdict` session-terminal event shape deferred from E4.2 T2
 - [ ] T4 Verify region availability; document gaps for India accounts
 
 ### Story E7.2 — Isolation and payloads
@@ -239,7 +247,7 @@ As a presenter, every state change is visible without narration.
 - [ ] T4 Storage pane: payload size vs history size
 
 ### Story E7.3 — Hosted lane
-- [ ] T1 `invoke_hosted_agent` activity against AgentCore Runtime
+- [ ] T1 `invoke_hosted_agent` activity against AgentCore Runtime — also owns **VendorCheck (E2.3 T4)**, deferred here because the hosted lane did not exist yet
 - [ ] T2 Register a hosted agent by ARN from the store, no repo access
 - [ ] T3 Document the durability tradeoff: per-invocation, not per-turn
 

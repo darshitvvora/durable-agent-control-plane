@@ -20,6 +20,12 @@ async def flood(tenant_id: str, count: int) -> dict:
     return {"submitted": count, "tenant_id": tenant_id}
 
 
+@router.get("/fairness")
+def get_fairness() -> FairnessSetting:
+    """Current fairness state, so a toggle can render the truth on load."""
+    return repo.get_fairness_setting()
+
+
 @router.post("/fairness")
 def fairness(enabled: bool) -> FairnessSetting:
     setting = FairnessSetting(enabled=enabled)

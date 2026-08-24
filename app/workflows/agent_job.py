@@ -30,6 +30,10 @@ MODEL_START_TO_CLOSE = timedelta(seconds=120)
 REGISTRY_START_TO_CLOSE = timedelta(seconds=10)
 JOB_STARTED_START_TO_CLOSE = timedelta(seconds=10)
 JOB_EVENTS_TOPIC = "job_events"
+# Raw Strands StreamEvents land here, published from inside the plugin's
+# invoke_model_streaming activity (E4.2). Separate topic from job_events
+# because the payload type differs — one stream, two heterogeneous topics.
+MODEL_STREAM_TOPIC = "model_stream"
 
 
 @workflow.defn(versioning_behavior=VersioningBehavior.PINNED)
@@ -138,8 +142,14 @@ class AgentJobWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=3),
             # Strands' default handler prints tokens to stdout, which also fires
             # during replay. Token output belongs on the session terminal via
-            # Workflow Streams (E4.2), not the worker's console.
+            # Workflow Streams, not the worker's console.
             callback_handler=None,
+            # E4.2: switches the plugin from invoke_model to
+            # invoke_model_streaming, which publishes each StreamEvent onto this
+            # workflow's stream via WorkflowStreamClient.from_within_activity().
+            # The token content originates inside the activity, so it cannot be
+            # published from workflow code the way the job_events above are.
+            streaming_topic=MODEL_STREAM_TOPIC,
         )
 
         # invoke_async, never agent(...) — the sync form spawns a thread the

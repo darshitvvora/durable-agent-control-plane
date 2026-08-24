@@ -7,27 +7,17 @@ worker dies after the call succeeds but before Temporal records
 ActivityTaskCompleted, the activity runs again from scratch. The only thing that
 makes the money move once is a durable, externally-checkable dedupe key.
 
-Key stability is the whole trick:
-
-    idempotency_key = payment:{workflow_id}:{activity_id}
-
-`activity_id` is assigned when the activity is *scheduled* and stays fixed while
-`attempt` increments across retries, so every retry of the same scheduled call
-derives the same key and dedupes. A genuinely new tool call gets a new
-activity_id, so legitimate second payments still go through. Deriving the key
-inside the activity is what makes it survive the crash — a key generated per
-invocation would differ on every retry and dedupe nothing.
+The key-stability trick that makes this work lives in `app/activities/idempotency.py`,
+shared with every other consequential tool.
 """
-
-from datetime import UTC, datetime
 
 import httpx
 from pydantic import BaseModel
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from app.activities.idempotency import run_once
 from app.config import get_settings
-from app.registry import repository as repo
 
 PAYMENT_TIMEOUT_SECONDS = 10.0
 
@@ -43,10 +33,6 @@ class PaymentResult(BaseModel):
     invoice_id: str
     amount_usd: float
     deduplicated: bool = False
-
-
-def _idempotency_key(info: activity.Info) -> str:
-    return f"payment:{info.workflow_id}:{info.activity_id}"
 
 
 async def _call_payment_service(request: PaymentRequest, idempotency_key: str) -> PaymentResult:
@@ -85,24 +71,12 @@ async def _call_payment_service(request: PaymentRequest, idempotency_key: str) -
 @activity.defn
 async def issue_payment(request: PaymentRequest) -> PaymentResult:
     """Pay an invoice at most once, however many times this activity is retried."""
-    info = activity.info()
-    key = _idempotency_key(info)
-    activity.logger.info("payment attempt %s key=%s", info.attempt, key)
 
-    existing = repo.get_idempotency_record(key)
-    if existing is not None and existing.status == "completed" and existing.result:
-        # Already paid on an earlier attempt. Return the recorded result without
-        # touching the provider — this is the branch proof 3 exercises.
-        activity.logger.info("payment already issued, deduplicated: key=%s", key)
-        return PaymentResult(**{**existing.result, "deduplicated": True})
+    async def perform(idempotency_key: str) -> dict:
+        result = await _call_payment_service(request, idempotency_key)
+        # `deduplicated` describes how a caller got the result, not the payment
+        # itself, so it is never part of the recorded result.
+        return result.model_dump(exclude={"deduplicated"})
 
-    claimed = repo.claim_idempotency_key(key, datetime.now(UTC).isoformat())
-    if not claimed and existing is None:
-        # Lost a race with a concurrent attempt that has not finished yet.
-        raise ApplicationError("payment already in flight for this key")
-
-    result = await _call_payment_service(request, key)
-    # `deduplicated` describes how a caller got the result, not the payment itself.
-    repo.complete_idempotency_record(key, result.model_dump(exclude={"deduplicated"}))
-    activity.logger.info("payment issued: %s", result.confirmation_id)
-    return result
+    recorded, deduplicated = await run_once("payment", perform)
+    return PaymentResult(**recorded, deduplicated=deduplicated)

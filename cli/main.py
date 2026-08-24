@@ -11,6 +11,7 @@ from typing import NoReturn
 
 import typer
 
+from app.demo import DEFAULT_FLOOD_AGENT_ID
 from app.registry import repository as repo
 from app.registry.manifest import (
     AGENTS_DIR,
@@ -179,7 +180,7 @@ def agent_test(
 
 async def _run_test(agent_id: str, prompt: str, tenant: str) -> None:
     from app.config import get_settings
-    from app.registry.priority import resolve_priority
+    from app.registry.priority import resolve_priority, tenant_search_attributes
     from app.temporal_client import connect
     from app.workflows.agent_job import AgentJobWorkflow
     from app.workflows.models import AgentJobInput
@@ -213,6 +214,7 @@ async def _run_test(agent_id: str, prompt: str, tenant: str) -> None:
         id=job_id,
         task_queue=settings.task_queue,
         priority=priority,
+        search_attributes=tenant_search_attributes(tenant),
     )
     outcome = await handle.result()
     typer.echo(f"  stop_reason = {outcome.stop_reason}")
@@ -234,13 +236,16 @@ def demo_fairness(
 def demo_flood(
     tenant: str = typer.Option(..., "--tenant"),
     count: int = typer.Option(..., "--count"),
+    agent: str = typer.Option(
+        DEFAULT_FLOOD_AGENT_ID, "--agent", help="Published agent to flood with"
+    ),
 ) -> None:
     """Submit `count` jobs for `tenant` concurrently, to build real queue backlog."""
     from app.demo import submit_flood
 
-    typer.echo(f"flooding {count} jobs for {tenant}...")
+    typer.echo(f"flooding {count} {agent} jobs for {tenant}...")
     try:
-        asyncio.run(submit_flood(tenant, count))
+        asyncio.run(submit_flood(tenant, count, agent))
     except ValueError as e:
         _fail(str(e))
     typer.secho(f"submitted {count} jobs for {tenant}", fg=typer.colors.GREEN)
