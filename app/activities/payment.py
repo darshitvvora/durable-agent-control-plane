@@ -37,7 +37,11 @@ class PaymentResult(BaseModel):
 
 async def _call_payment_service(request: PaymentRequest, idempotency_key: str) -> PaymentResult:
     settings = get_settings()
-    confirmation_id = f"conf-{idempotency_key.rsplit(':', 1)[-1]}"
+    # The full key, not just its activity_id suffix: activity_id is a small
+    # per-workflow counter, so two different jobs can easily land on the same
+    # one (E6.2 caught this — the provider-side dedup check below would then
+    # collide two unrelated payments into a false match).
+    confirmation_id = f"conf-{idempotency_key.replace(':', '-')}"
     payload = {
         "confirmation_id": confirmation_id,
         "invoice_id": request.invoice_id,
@@ -45,12 +49,25 @@ async def _call_payment_service(request: PaymentRequest, idempotency_key: str) -
         "payee": request.payee,
     }
     async with httpx.AsyncClient(timeout=PAYMENT_TIMEOUT_SECONDS) as client:
+        # A crash between this call succeeding and run_once's own completion
+        # record being written (E6.2, proof 3) would otherwise re-POST on
+        # retry, since the mock deliberately doesn't dedupe on the header
+        # below — it counts every call that reaches it, so the proof-3 counter
+        # measures reality, not our bookkeeping. Check the provider itself by
+        # the deterministic confirmation_id first — the DynamoDB claim alone
+        # can't tell a crash-before-the-call apart from a crash-after-it.
+        existing = await client.get(f"{settings.mockoon_base_url}/payments")
+        existing.raise_for_status()
+        if any(item.get("confirmation_id") == confirmation_id for item in existing.json()):
+            return PaymentResult(
+                confirmation_id=confirmation_id,
+                invoice_id=request.invoice_id,
+                amount_usd=request.amount_usd,
+            )
+
         response = await client.post(
             f"{settings.mockoon_base_url}/payments",
             json=payload,
-            # A real provider (Stripe et al.) dedupes on this header. Our mock
-            # deliberately does not — it counts every call that reaches it, so the
-            # proof-3 counter measures reality rather than our own bookkeeping.
             headers={"Idempotency-Key": idempotency_key},
         )
     if response.status_code >= 500:

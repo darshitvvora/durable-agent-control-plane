@@ -8,8 +8,10 @@ activity-tool interrupts silently stop working (CLAUDE.md §4).
 
 from collections.abc import Callable
 
+from mcp.client.streamable_http import streamablehttp_client
 from strands.models import Model
 from strands.models.bedrock import BedrockModel
+from strands.tools.mcp import MCPClient
 from temporalio.client import Client
 from temporalio.contrib.strands import StrandsPlugin
 
@@ -36,8 +38,28 @@ def model_registry() -> dict[str, Callable[[], Model]]:
     }
 
 
+def mcp_client_registry() -> dict[str, Callable[[], MCPClient]]:
+    """Manifest `mcp_servers:` names → MCP transport factories (E7.1 T1).
+
+    "vendor-directory" here is the same name `TemporalMCPClient` uses
+    workflow-side (`app/registry/mcp_servers.py`) — only this factory knows
+    the actual Gateway URL. Empty if the Gateway isn't provisioned yet (a
+    fresh fork before `docs/AWS_SETUP.md`'s Gateway step), so a manifest that
+    declares an MCP server fails clearly with "not registered on this worker"
+    rather than silently having no tools.
+    """
+    settings = get_settings()
+    servers: dict[str, Callable[[], MCPClient]] = {}
+    if settings.agentcore_gateway_url:
+        url = settings.agentcore_gateway_url
+        servers["vendor-directory"] = lambda: MCPClient(
+            lambda: streamablehttp_client(url)
+        )
+    return servers
+
+
 def strands_plugin() -> StrandsPlugin:
-    return StrandsPlugin(models=model_registry())
+    return StrandsPlugin(models=model_registry(), mcp_clients=mcp_client_registry())
 
 
 async def connect() -> Client:

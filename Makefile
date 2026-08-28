@@ -1,5 +1,5 @@
 .PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
-	verify-tenant-priority verify-streaming verify-agents \
+	verify-tenant-priority verify-streaming verify-agents verify-versioning verify-pinning verify-kill-resume \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
@@ -21,9 +21,10 @@ ui:
 e2e:
 	cd ui && npm run e2e
 
-# npx avoids a global install; the desktop app can open the same collection file
+# mockoon-cli is installed globally (`npm install -g @mockoon/cli`); the
+# desktop app can open the same collection file as an alternative
 mockoon:
-	npx --yes @mockoon/cli@9.8.0 start --data mocks/payment-service.json --port 3001
+	mockoon-cli start --data mocks/payment-service.json --port 3001
 
 # --- verification — runs against real AWS and real Temporal Cloud ---
 
@@ -57,6 +58,18 @@ verify-streaming:
 # needs `make worker` and Mockoon running
 verify-agents:
 	uv run python -m scripts.verify_reference_agents
+
+# needs `make worker` and Mockoon running
+verify-versioning:
+	uv run python -m scripts.verify_versioning
+
+# needs `make worker` and Mockoon running — spawns its OWN second worker process
+verify-pinning:
+	uv run python -m scripts.verify_pinning
+
+# needs Mockoon running — spawns its OWN worker process(es), do not run `make worker` alongside it
+verify-kill-resume:
+	uv run python -m scripts.verify_kill_resume
 
 # non-determinism guard — replays real histories from Temporal Cloud (script lands with E1.1)
 replay:

@@ -119,3 +119,40 @@
 .caret {
   animation: blink 1.06s steps(1) infinite;
 }
+
+/* E5.2 T2 — the three deliberate state flips the proofs turn on. */
+
+/* Process Monitor: a lane's row is repositioned via inline transform (FLIP,
+ * ProcessMonitor.tsx) whenever load re-sorts the table; this is what makes
+ * that repositioning ease instead of snap. */
+.lane-row {
+  transition: transform 420ms ease;
+}
+
+/* System Controls: the fairness toggle flipping ON/OFF (proof 1). */
+@keyframes flip-flash {
+  0% {
+    background-color: var(--color-signal);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.flip-flash {
+  animation: flip-flash 600ms ease-out;
+}
+
+/* Session Terminal: a worker-deployment version badge appearing (proof 2). */
+@keyframes badge-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.badge-in {
+  animation: badge-in 320ms ease-out;
+}

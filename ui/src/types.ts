@@ -31,10 +31,18 @@ export type Lane = {
   p95_wait_seconds: number | null;
 };
 
+export type RampStatus = {
+  current_version: string;
+  ramping_version: string;
+  ramping_percentage: number;
+};
+
 export type FleetStatus = {
   workers: number;
   jobs_by_status: Record<string, number>;
   fairness_enabled: boolean;
+  ramp: RampStatus;
+  payment_count: number;
 };
 
 export type Job = {

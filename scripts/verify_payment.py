@@ -13,6 +13,7 @@ Checks:
 """
 
 import asyncio
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -23,7 +24,11 @@ from app.activities.payment import PaymentRequest, PaymentResult, issue_payment
 from app.config import get_settings
 from app.registry import repository as repo
 
-WORKFLOW_ID = "verify-payment-wf"
+# Randomized per run, not fixed: the payment activity now checks the provider
+# itself by a natural key derived from (workflow_id, activity_id) (E6.2) — a
+# fixed id here would collide with a real leftover record from an earlier
+# run and be (correctly) treated as already paid.
+WORKFLOW_ID = f"verify-payment-wf-{uuid.uuid4().hex[:8]}"
 ACTIVITY_ID = "pay-1"
 OTHER_ACTIVITY_ID = "pay-2"
 

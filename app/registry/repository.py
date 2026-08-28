@@ -19,6 +19,7 @@ from app.registry.models import (
     IdempotencyRecord,
     Job,
     JobResult,
+    KillSwitch,
     Tenant,
 )
 
@@ -303,4 +304,20 @@ def get_fairness_setting() -> FairnessSetting:
 
 def put_fairness_setting(setting: FairnessSetting) -> None:
     item = _FAIRNESS_KEY | {k: _to_decimal(v) for k, v in setting.model_dump().items()}
+    _table().put_item(Item=item)
+
+
+# --- KillSwitch — proof 3's armed-kill demo control (E6.2) ---
+
+_KILL_SWITCH_KEY = {"pk": "SETTINGS#kill_switch", "sk": "SETTINGS#kill_switch"}
+
+
+def get_kill_switch() -> KillSwitch:
+    response = _table().get_item(Key=_KILL_SWITCH_KEY)
+    item = response.get("Item")
+    return KillSwitch(**_decode(item)) if item else KillSwitch()
+
+
+def put_kill_switch(setting: KillSwitch) -> None:
+    item = _KILL_SWITCH_KEY | {k: _to_decimal(v) for k, v in setting.model_dump().items()}
     _table().put_item(Item=item)

@@ -163,3 +163,14 @@ class FairnessSetting(BaseModel):
     """
 
     enabled: bool = True
+
+
+class KillSwitch(BaseModel):
+    """Armed kill for proof 3's live rehearsal (E6.2). When armed, the next
+    consequential-tool call (`run_once`, `app/activities/idempotency.py`) hard-
+    exits the worker process immediately after its external call succeeds and
+    before Temporal records completion — the exact window idempotency exists
+    to cover. Disarms itself the instant it fires, so a restarted worker
+    doesn't kill itself again."""
+
+    armed: bool = False

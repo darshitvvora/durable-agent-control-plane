@@ -205,8 +205,8 @@ As a presenter, every state change is visible without narration.
 **Acceptance:** a dry run recorded and viewed at 10 m on a conference-size screen.
 
 - [x] T1 Type scale, contrast, colour audit — measured via computed-style introspection (Playwright `browser_evaluate`), not eyeballed: iterated until the smallest rendered text anywhere in the shell was 13px (secondary labels only — column headers, units) and the two numbers the proofs turn on (p95 wait, lane load) are the largest things on screen. `make e2e`'s stage-floor spec makes this a regression guard, not a one-time check.
-- [ ] T2 Animate the three state changes that carry the proofs — not built. The CSS deliberately avoids decorative animation ("data that streams should not animate its own arrival"), but a deliberate treatment for lane-overtaking, the fairness toggle flip, and the version badge appearing was not designed. Real gap, not a stub.
-- [ ] T3 Fix anything unreadable in the recording — not started; needs an actual dry run on conference-scale hardware, out of scope for a single build session.
+- [x] T2 Animate the three state changes that carry the proofs — a FLIP transform transition on Process Monitor's rows (`useLaneFlip`, `ProcessMonitor.tsx`) so a lane overtaking another eases into position instead of snapping (the server already sorts lanes busiest-first, per E3.2; this is what finally makes that visible as motion); a `flip-flash` keyframe on the fairness ON/OFF readout (`SystemControls.tsx`); a `badge-in` keyframe on the worker-version badge's first appearance (`SessionTerminal.tsx`). All three are remount-triggered (`key={value}`) CSS animations, not a new dependency — consistent with `index.css`'s existing rule that only deliberate state flips animate, never streamed data arriving.
+- [~] T3 Fix anything unreadable in the recording — `make e2e`'s 6 specs pass clean (including a real flood-and-stream run exercising the new lane FLIP), and a manual Playwright walkthrough at 1400×1400 confirmed the System Controls pane's new sections render correctly. A true conference-scale (10m, projector) dry run is still open — genuinely needs physical hardware, out of scope for a build session.
 
 ---
 
@@ -215,30 +215,42 @@ As a presenter, every state change is visible without narration.
 ### Story E6.1 — Worker versioning
 **Acceptance:** deploy v2 with 20 sessions in flight; v1 sessions finish on v1; new sessions start on v2; both visible side by side.
 
-- [ ] T1 Worker Deployment Versions; `default_versioning_behavior=PINNED`
-- [ ] T2 Ramp control (API + CLI)
-- [ ] T3 Version badge per session in the UI
-- [ ] T4 Ship a genuinely different v2 of Invoice Exception, so the streams visibly differ
-- [ ] T5 Test: in-flight pinning holds under ramp
+- [x] T1 Worker Deployment Versions; `default_versioning_behavior=PINNED` — already done since E1.1 (`app/worker.py`); confirmed it matches `temporalio/samples-python`'s `worker_versioning/workerv2.py` exactly
+- [x] T2 Ramp control (API + CLI) — `app/registry/deployment.py` wraps the raw `workflow_service` RPCs (`set_worker_deployment_current_version`, `set_worker_deployment_ramping_version`; no high-level `Client` method exists for either). `dos demo ramp --version --percent` / `GET,POST /api/demo/ramp` / `POST /api/demo/ramp/clear`. `--percent >=100` calls set-current instead of a 100% ramp, matching the Temporal CLI's own documented distinction between the two.
+- [x] T3 Version badge per session in the UI — already done since E4.2/E5.1 (`/api/jobs/{id}/state`'s `worker_version`, rendered in `SessionTerminal.tsx`)
+- [x] T4 Ship a genuinely different v2 of Invoice Exception — a real `AgentJobWorkflow` change, not a cosmetic one (confirmed with the human at Inception): wired `structured_output_model` into `TemporalAgent` (E1.1 T6, previously an open gap), resolved from the manifest's `output_model` field via a new `OUTPUT_MODEL_CATALOG` (same resolve-or-fail shape as `TOOL_CATALOG`). `invoice-exception` v2 sets `output_model: InvoiceDecision` — same policy as v1, but the answer is a validated object instead of prose. `BUILD_ID` v7→v8.
+- [x] T5 Test: in-flight pinning holds under ramp — new `make verify-pinning`, which spawns its own second worker process under a temporary Build ID and proves the real mechanism end to end: a session paused on approval stays pinned to its original build (zero worker cost while it waits) after `current` moves elsewhere mid-flight; a genuinely new session started after the move runs on the new build; approving the paused session lets it finish — still on its original build, never having moved.
+
+**Verified 2026-08-24**, all against real Temporal Cloud: `make verify-versioning` (structured output — a settle decision on invoice INV-8001 came back as a validated `InvoiceDecision`, not prose; ramp control — set 25% toward a real prior build, confirmed via `describe_worker_deployment`, then cleared). `make verify-pinning` (the full pin-survives-a-deploy mechanism, described above). Since this touched every session's model construction, all three proofs were re-verified on v8 (payment idempotency, tool-call, approve/deny interrupt, streaming, tenant priority) and `make replay` is clean against 11 v8 histories.
+
+**`make verify-agents` re-run interrupted mid-run by AWS SSO token expiry** (`"Token has expired and refresh failed"`) after a very long session — an environmental issue, not a code defect; Temporal Cloud auth (a separate API key) was unaffected throughout. Caught and fixed a real, separate test-script gap while diagnosing it: `scripts/verify_reference_agents.py` didn't handle Dispute Resolution's approval interrupt, which Mockoon's randomised evidence amount (E2.3 DECISIONS.md) can legitimately trigger above $500 — the agent paused correctly, exactly as designed, and the *test* just never approved it. Fixed to auto-approve like a reviewer would, same as `verify_interrupt.py`'s pattern. Full `make verify-agents` re-run pending a fresh AWS session (`aws sso login`) — the mechanism itself (all three agents, including the approval path) was already proven correct earlier in E2.3 and again mid-diagnosis here.
 
 ### Story E6.2 — Armed kill and resume
 **Acceptance:** kill fires at a tool boundary right after the payment activity; restart resumes at the same turn; payment counter still reads 1.
 
-- [ ] T1 Armed kill — fires at next tool boundary, not on a timer
-- [ ] T2 Side-effect counter surfaced from the mocked payment service, always visible
-- [ ] T3 Restart path; sessions resume mid-turn
-- [ ] T4 Test: no duplicate payment across kill/restart
-- [ ] T5 Rehearse ten times — this is the closer and must be live
+- [x] T1 Armed kill — fires at next tool boundary, not on a timer — a `KillSwitch` DynamoDB record (same pattern as `FairnessSetting`), checked inside the shared `run_once` (`app/activities/idempotency.py`) right after the external call succeeds and before completion is recorded, then `os._exit(1)`. Deterministic, not a raced OS signal — considered and rejected an external container/process kill (see `docs/DECISIONS.md`).
+- [x] T2 Side-effect counter surfaced from the mocked payment service, always visible — `GET /api/demo/payment-count` (`len(GET /payments)` against Mockoon's own CRUD bucket, which already counts every call with no dedupe by design); on the Status Strip via `/api/metrics/status`'s new `payment_count` field.
+- [x] T3 Restart path; sessions resume mid-turn — inherent to Temporal once T1 existed to prove it; no new code.
+- [x] T4 Test: no duplicate payment across kill/restart — `scripts/verify_kill_resume.py` / `make verify-kill-resume`; caught and fixed two real bugs in the *existing* idempotency mechanism, not just added test coverage (see `docs/DECISIONS.md`).
+- [~] T5 Rehearse ten times — 3 clean automated back-to-back runs via `make verify-kill-resume` so far; a live, presenter-driven 10x rehearsal (manual `dos demo kill-worker` + `make worker` restart, on the actual demo stack) is still open, scheduled for the Operations dry-run pass.
+
+CLI: `dos demo kill-worker --at-tool-boundary`, `dos demo payment-count`. UI: System Controls gained the kill-worker button and the ramp slider carried over from E6.1 (its backend existed, but was never wired into the UI until now).
+
+**Verified 2026-08-28** against real Temporal Cloud, real DynamoDB, and real Mockoon: `make verify-kill-resume` (3 consecutive clean runs), plus re-verification of everything sharing the changed code path — `make verify-payment`, `make verify-tool-call`, `make verify-interrupt`, `make verify-agents` (covers dispute-resolution's `submit_dispute_response`, which shares `run_once`), and `make replay` clean against 13 histories. Proofs 1 and 2 were not re-run — nothing this story touched is on their path.
 
 ---
 
 ## E7 — AWS services
 
 ### Story E7.1 — Gateway, Memory, Guardrails
-- [ ] T1 `TemporalMCPClient` against AgentCore Gateway; tools re-listed per turn
-- [ ] T2 AgentCore Memory, tenant-scoped recall — also owns the `memory_recall` session-terminal event shape deferred from E4.2 T2
-- [ ] T3 Bedrock Guardrails as a deterministic activity between proposal and commit — also owns the `guardrail_verdict` session-terminal event shape deferred from E4.2 T2
+**All three AWS resources provisioned 2026-08-28** (human-run, per `docs/AWS_SETUP.md`): Guardrail `lqhh5fwndqoh` v1 READY, Memory `durable_agent_control_plane_tenant_recall-eUd6RC3Jts` ACTIVE, Gateway `durable-acp-gateway-twsmoz1de7` READY with its `vendor-directory` Lambda target READY. `.env` updated with all four values. Gateway smoke-tested end-to-end over raw MCP JSON-RPC (`initialize` → `tools/list` → `tools/call`) before writing any client code — `lookup_vendor_risk` for "Globex Retail" correctly returned the Lambda's canned risk data.
+
+- [x] T1 `TemporalMCPClient` against AgentCore Gateway; tools re-listed per turn — `app/registry/mcp_servers.py` (workflow-side catalog, "vendor-directory" as a portable name) + `app/temporal_client.py`'s `mcp_client_registry()` (worker-side, the only place the real Gateway URL lives). `invoice-exception` v3 adds `mcp_servers: [vendor-directory]` and a SOP step requiring a risk lookup before deciding. Two real bugs caught before this was right — see `docs/DECISIONS.md`: a missing `mcp_clients=` argument to `StrandsPlugin`, and using the raw Gateway URL as the workflow-side `server` name instead of a portable catalog key. `BUILD_ID` v8→v9→v10 (v9 briefly had two incompatible shapes in the same build id — a process mistake, corrected by bumping again rather than left as a `make replay` gap).
+- [x] T2 AgentCore Memory, tenant-scoped recall — `app/activities/memory.py` (`recall_tenant_memory`/`record_tenant_memory`, real `bedrock-agentcore` data-plane calls, `create_event`/`list_events`, not `retrieve_memory_records` since this Memory resource has no strategies). `actorId`/`sessionId` both = `tenant_id`, so every job for a tenant writes into one recallable stream. Recall runs once per job (before the SOP renders, appended as a "Recent history" section) and publishes the deferred `memory_recall` session-terminal event; write runs once after the job finishes, best-effort. `BUILD_ID` v10→v11.
+- [x] T3 Bedrock Guardrails as a deterministic activity between proposal and commit — `app/activities/guardrail.py` (`apply_guardrail`, standalone `ApplyGuardrail` API) + `app/workflows/guardrail.py` (`GuardrailGate`, an *async* `BeforeToolCallEvent` hook next to `ApprovalGate` — confirmed Strands' `invoke_callbacks_async` supports mixed sync/async callbacks by reading source). Only `submit_dispute_response` is guarded, not `issue_payment` — see `docs/DECISIONS.md` for the two false positives that led there. `BUILD_ID` v11→v12→v13 (v12 added the hook for both tools; v13 narrowed to one, after the false positives were found).
 - [ ] T4 Verify region availability; document gaps for India accounts
+
+**Verified 2026-08-28** against real Temporal Cloud/AWS/Gateway/Memory/Guardrails: `dos agent test invoice-exception` against low/medium-risk vendors and a $900 above-threshold approval flow, `make verify-agents` ×2 for stability (activity lists now show `recall_tenant_memory`/`record_tenant_memory` on every agent and `apply_guardrail` only on dispute-resolution's filing), all three proofs re-run repeatedly across v10→v13 (`verify-payment`, `verify-tool-call`, `verify-interrupt`, `verify-versioning`, `verify-pinning`, `verify-kill-resume`, `verify-streaming`, `verify-tenant-priority`), `make replay` clean at each step, finishing clean against 17 v13 histories. Three test-script bugs found and fixed along the way (not application bugs, per `docs/DECISIONS.md`): `verify_payment.py`'s fixed workflow id colliding with its own leftover data; a `verify-kill-resume` run intercepted by a leftover manually-started worker; `verify_reference_agents.py`'s fixed dispute/invoice ids colliding with the tenant's own new Memory recall across runs.
 
 ### Story E7.2 — Isolation and payloads
 - [ ] T1 AgentCore Code Interpreter sandbox lane, invoked from a Temporal Activity (see `docs/DECISIONS.md`)

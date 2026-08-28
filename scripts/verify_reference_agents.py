@@ -29,14 +29,24 @@ TRIAGE_PROMPT = (
     "Recent deploys: checkout-api v412 at 13:58 UTC, search-api v88 at 11:20 UTC. "
     "Triage it."
 )
-DISPUTE_PROMPT = (
-    "Chargeback DSP-2001 has been filed against us. Work out whether to accept "
-    "or contest it, and file the response."
-)
-INVOICE_PROMPT = (
-    "Invoice INV-7001 for $60 to Globex Retail failed PO matching on quantity "
-    "(received 12, ordered 10). Settle it."
-)
+def _dispute_prompt() -> str:
+    # Randomized, not fixed: tenant-scoped Memory (E7.1 T2) now persists across
+    # runs, so a fixed dispute id makes the agent correctly recall "I already
+    # handled this" on a second run and skip filing — a real memory-recall
+    # effect, not a bug, but it breaks this test's fixed-id assumption.
+    dispute_id = f"DSP-{uuid.uuid4().hex[:6]}"
+    return (
+        f"Chargeback {dispute_id} has been filed against us. Work out whether "
+        "to accept or contest it, and file the response."
+    )
+
+
+def _invoice_prompt() -> str:
+    invoice_id = f"INV-{uuid.uuid4().hex[:6]}"
+    return (
+        f"Invoice {invoice_id} for $60 to Globex Retail failed PO matching on "
+        "quantity (received 12, ordered 10). Settle it."
+    )
 
 
 async def run_agent(client, agent_id: str, tenant: str, prompt: str) -> tuple[str, list[str]]:
@@ -59,6 +69,20 @@ async def run_agent(client, agent_id: str, tenant: str, prompt: str) -> tuple[st
         task_queue=settings.task_queue,
         priority=resolve_priority(tenant),
     )
+
+    # Dispute Resolution's evidence amount is randomised by Mockoon (E2.3
+    # DECISIONS.md) and gates approval above $500 — auto-approve if it lands
+    # there, the same way a reviewer would, rather than hanging forever.
+    while True:
+        pending = await handle.query(AgentJobWorkflow.pending_approval)
+        if pending is None:
+            break
+        print(f"  auto-approving {pending.tool} (policy: {pending.policy})")
+        await handle.signal(
+            AgentJobWorkflow.submit_approval, args=[pending.interrupt_id, "approve"]
+        )
+        await asyncio.sleep(1)
+
     outcome = await handle.result()
 
     scheduled = sorted(
@@ -94,7 +118,7 @@ async def main() -> None:
 
     # --- dispute-resolution: tier 2, Globex, evidence lookup + filing ---
     before = await dispute_response_count()
-    output, scheduled = await run_agent(client, "dispute-resolution", "globex", DISPUTE_PROMPT)
+    output, scheduled = await run_agent(client, "dispute-resolution", "globex", _dispute_prompt())
     after = await dispute_response_count()
     print("dispute-resolution (globex, tier 2)")
     print(f"  activities = {scheduled}")
@@ -105,7 +129,7 @@ async def main() -> None:
     assert after == before + 1, f"expected exactly one filing, got {after - before}"
 
     # --- invoice-exception: tier 2, Acme, below-threshold settle ---
-    output, scheduled = await run_agent(client, "invoice-exception", "acme", INVOICE_PROMPT)
+    output, scheduled = await run_agent(client, "invoice-exception", "acme", _invoice_prompt())
     print("invoice-exception (acme, tier 2)")
     print(f"  activities = {scheduled}")
     print(f"  output     = {output.strip()[:120]!r}")

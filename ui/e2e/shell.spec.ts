@@ -62,7 +62,7 @@ test("flooding a tenant drives its lane and streams a real session", async ({ pa
 
   // Flood initech — the tier-1 flood generator — through the UI's own control.
   await page.getByRole("combobox").selectOption("initech");
-  await page.getByRole("spinbutton").fill("3");
+  await page.getByRole("spinbutton", { name: "flood count" }).fill("3");
   await page.getByRole("button", { name: "Run" }).click();
 
   // The lane's running count must actually move; it comes from Temporal's

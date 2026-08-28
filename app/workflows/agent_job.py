@@ -8,6 +8,7 @@ proof 2. Do not change it without reading CLAUDE.md §1.
 """
 
 from datetime import timedelta
+from typing import Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy, VersioningBehavior
@@ -21,14 +22,19 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.contrib.strands import TemporalAgent
     from temporalio.contrib.strands import workflow as strands_workflow
 
-    from app.activities.catalog import TOOL_CATALOG
+    from app.activities.catalog import GUARDED_TOOLS, TOOL_CATALOG
+    from app.activities.memory import recall_tenant_memory, record_tenant_memory
     from app.activities.registry import mark_job_started, resolve_agent_package
     from app.registry.manifest import render_sop
+    from app.registry.mcp_servers import MCP_SERVER_CATALOG
+    from app.registry.output_models import OUTPUT_MODEL_CATALOG
     from app.workflows.approval import ApprovalGate
+    from app.workflows.guardrail import GuardrailGate
 
 MODEL_START_TO_CLOSE = timedelta(seconds=120)
 REGISTRY_START_TO_CLOSE = timedelta(seconds=10)
 JOB_STARTED_START_TO_CLOSE = timedelta(seconds=10)
+MEMORY_START_TO_CLOSE = timedelta(seconds=10)
 JOB_EVENTS_TOPIC = "job_events"
 # Raw Strands StreamEvents land here, published from inside the plugin's
 # invoke_model_streaming activity (E4.2). Separate topic from job_events
@@ -103,10 +109,24 @@ class AgentJobWorkflow:
             start_to_close_timeout=REGISTRY_START_TO_CLOSE,
         )
 
+        # Tenant-scoped recall (E7.1 T2) — every agent, not manifest-gated,
+        # same cross-cutting shape as mark_job_started above. Empty (not an
+        # error) if Memory isn't configured or this tenant has no history yet.
+        recalled = await workflow.execute_activity(
+            recall_tenant_memory,
+            args=[job.tenant_id],
+            start_to_close_timeout=MEMORY_START_TO_CLOSE,
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+        if recalled:
+            self.events.publish(
+                UIEvent(job_id=job.job_id, kind="memory_recall", payload={"notes": recalled})
+            )
+
         # Tools come from the manifest, resolved against the catalog. An unknown
         # name is the agent author's error and cannot be fixed by retrying, so it
         # fails the workflow rather than silently running a toolless agent.
-        tools = []
+        tools: list[Any] = []
         for tool_name in package.tools:
             spec = TOOL_CATALOG.get(tool_name)
             if spec is None:
@@ -116,6 +136,31 @@ class AgentJobWorkflow:
                     non_retryable=True,
                 )
             tools.append(strands_workflow.activity_as_tool(spec.activity, **spec.options))
+
+        # Same resolve-or-fail shape as tools above (E7.1 T1). TemporalMCPClient
+        # is itself a Strands ToolProvider — it goes straight into tools=,
+        # unlike TOOL_CATALOG's activities which need activity_as_tool() first.
+        for server_name in package.mcp_servers:
+            client = MCP_SERVER_CATALOG.get(server_name)
+            if client is None:
+                raise ApplicationError(
+                    f"unknown mcp_server {server_name!r} declared by {package.agent_id}",
+                    type="UnknownMCPServer",
+                    non_retryable=True,
+                )
+            tools.append(client)
+
+        # Same resolve-or-fail shape as tools above (E6.1 T4). Pure type lookup,
+        # no I/O — safe directly in workflow code, unlike the tool activities.
+        output_model = None
+        if package.output_model is not None:
+            output_model = OUTPUT_MODEL_CATALOG.get(package.output_model)
+            if output_model is None:
+                raise ApplicationError(
+                    f"unknown output_model {package.output_model!r} declared by {package.agent_id}",
+                    type="UnknownOutputModel",
+                    non_retryable=True,
+                )
 
         # SOP placeholders resolve here, per job: manifest defaults first, then
         # runtime context wins. Pure string substitution, so it is replay-safe and
@@ -130,6 +175,9 @@ class AgentJobWorkflow:
                 "job_id": job.job_id,
             },
         )
+        if recalled:
+            history = "\n".join(f"- {note}" for note in recalled)
+            system_prompt += f"\n\n## Recent history for this tenant\n{history}"
 
         # Constructed from the manifest — deterministic, no I/O. The model, tool,
         # and MCP calls it makes are dispatched as Temporal activities by StrandsPlugin.
@@ -137,7 +185,8 @@ class AgentJobWorkflow:
             model=package.model,
             system_prompt=system_prompt,
             tools=tools,
-            hooks=[ApprovalGate(package.approval_policy)],
+            hooks=[ApprovalGate(package.approval_policy), GuardrailGate(GUARDED_TOOLS)],
+            structured_output_model=output_model,
             start_to_close_timeout=MODEL_START_TO_CLOSE,
             retry_policy=RetryPolicy(maximum_attempts=3),
             # Strands' default handler prints tokens to stdout, which also fires
@@ -203,6 +252,24 @@ class AgentJobWorkflow:
                 payload={"stop_reason": str(result.stop_reason)},
             )
         )
+
+        # Write this job's outcome for future recall by the same tenant
+        # (E7.1 T2). Best-effort: a memory write failing is never a reason to
+        # fail a job it is only summarizing, so its own retries are capped low
+        # and any remaining failure is swallowed, not raised.
+        summary = (
+            f"{job.agent_id} v{job.agent_version}: {result.stop_reason} — {str(result)[:200]}"
+        )
+        try:
+            await workflow.execute_activity(
+                record_tenant_memory,
+                args=[job.tenant_id, summary],
+                start_to_close_timeout=MEMORY_START_TO_CLOSE,
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+        except ActivityError:
+            workflow.logger.warning("record_tenant_memory failed for %s, continuing", job.job_id)
+
         # Hold the run open briefly so a subscriber's next poll delivers this
         # terminal event before the workflow closes and the log is gone —
         # same reasoning as the workflow_streams samples' OrderWorkflow/LLMWorkflow.

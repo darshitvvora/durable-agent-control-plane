@@ -96,7 +96,12 @@ export function SessionTerminal({ job }: { job: Job | null }) {
       right={
         <span className="flex items-center gap-3 font-mono text-[14px] text-[#4a463d]">
           {state?.worker_version && (
-            <span className="bg-[#33332a] px-2 py-[2px] text-ink">{state.worker_version}</span>
+            <span
+              key={state.worker_version}
+              className="badge-in bg-[#33332a] px-2 py-[2px] text-ink"
+            >
+              {state.worker_version}
+            </span>
           )}
           <span className={live ? "text-[#1d6b2f]" : ""}>{live ? "● live" : "○ idle"}</span>
         </span>

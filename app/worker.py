@@ -14,6 +14,8 @@ from temporalio.worker import Worker, WorkerDeploymentConfig, WorkerDeploymentVe
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
 from app.activities.catalog import all_activities
+from app.activities.guardrail import apply_guardrail
+from app.activities.memory import recall_tenant_memory, record_tenant_memory
 from app.activities.registry import mark_job_started, resolve_agent_package
 from app.config import get_settings
 from app.temporal_client import connect
@@ -30,7 +32,14 @@ async def main() -> None:
         client,
         task_queue=settings.task_queue,
         workflows=[AgentJobWorkflow],
-        activities=[resolve_agent_package, mark_job_started, *all_activities()],
+        activities=[
+            resolve_agent_package,
+            mark_job_started,
+            recall_tenant_memory,
+            record_tenant_memory,
+            apply_guardrail,
+            *all_activities(),
+        ],
         # No plugins= here on purpose: the worker inherits StrandsPlugin from the
         # client. Passing it again registers the plugin's model/tool activities
         # twice and the worker dies with "More than one activity named

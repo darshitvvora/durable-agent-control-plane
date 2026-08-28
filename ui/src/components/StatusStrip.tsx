@@ -37,6 +37,7 @@ export function StatusStrip({ status }: { status: FleetStatus | null }) {
           value={status ? (status.fairness_enabled ? "ON" : "OFF") : "—"}
           signal={status ? !status.fairness_enabled : false}
         />
+        <Readout label="Payments" value={status ? String(status.payment_count) : "—"} />
       </div>
     </header>
   );

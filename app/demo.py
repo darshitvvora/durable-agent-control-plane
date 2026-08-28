@@ -6,9 +6,13 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 
+import httpx
+
 from app.config import get_settings
+from app.registry import deployment as deployment_registry
 from app.registry import repository as repo
-from app.registry.models import Job, JobStatus
+from app.registry.deployment import RoutingStatus
+from app.registry.models import Job, JobStatus, KillSwitch
 from app.registry.priority import resolve_priority, tenant_search_attributes
 from app.temporal_client import connect
 from app.workflows.agent_job import AgentJobWorkflow
@@ -77,3 +81,47 @@ async def submit_flood(
         )
 
     await asyncio.gather(*(submit_one() for _ in range(count)))
+
+
+async def ramp_status() -> RoutingStatus:
+    client = await connect()
+    return await deployment_registry.routing_status(client)
+
+
+async def set_ramp(build_id: str, percentage: float) -> None:
+    """Route `percentage`% of NEW workflow starts to `build_id` (proof 2, E6.1).
+    In-flight PINNED sessions on other versions keep running unaffected —
+    that's the whole point of the proof."""
+    client = await connect()
+    if percentage >= 100.0:
+        # >=100% is "make it current", not "ramp toward it" — set-current is
+        # the correct RPC for that, not a 100% ramp (see docs/DECISIONS.md).
+        await deployment_registry.set_current_version(client, build_id)
+        await deployment_registry.clear_ramp(client)
+    else:
+        await deployment_registry.set_ramp(client, build_id, percentage)
+
+
+async def arm_kill_switch() -> KillSwitch:
+    """Arm the next consequential-tool call to crash the worker right after
+    its external side effect succeeds (E6.2, proof 3). Fires inside
+    `app.activities.idempotency.run_once`, wherever a job hits it next."""
+    setting = KillSwitch(armed=True)
+    repo.put_kill_switch(setting)
+    return setting
+
+
+async def payment_count() -> int:
+    """How many payment calls actually reached the mocked provider — proof 3's
+    visible counter. Mockoon's `payments` bucket counts every call with no
+    dedupe of its own, so this measures reality, not our own bookkeeping."""
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(f"{settings.mockoon_base_url}/payments")
+    response.raise_for_status()
+    return len(response.json())
+
+
+async def clear_ramp() -> None:
+    client = await connect()
+    await deployment_registry.clear_ramp(client)

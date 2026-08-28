@@ -1,0 +1,25 @@
+{
+  "mcp": {
+    "lambda": {
+      "lambdaArn": "arn:aws:lambda:us-east-1:429214323166:function:durable-acp-vendor-directory",
+      "toolSchema": {
+        "inlinePayload": [
+          {
+            "name": "lookup_vendor_risk",
+            "description": "Look up a vendor's payment risk tier and history notes by name.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "vendor_name": {
+                  "type": "string",
+                  "description": "The vendor's name, as it appears on the invoice."
+                }
+              },
+              "required": ["vendor_name"]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request
 
+from app.demo import payment_count, ramp_status
 from app.registry import fleet
 from app.registry import repository as repo
 from app.registry.metrics import tenant_wait_p95
@@ -22,10 +23,12 @@ async def lanes(request: Request) -> list[fleet.Lane]:
 @router.get("/status")
 async def status(request: Request) -> dict:
     """Status-strip numbers. Only what is really measurable today — sandbox
-    count, S3 offload and version ramp land with E7.2/E6.1."""
+    count and S3 offload land with E7.2."""
     client = request.app.state.temporal_client
     return {
         "workers": await fleet.worker_count(client),
         "jobs_by_status": await fleet.status_counts(client),
         "fairness_enabled": repo.get_fairness_setting().enabled,
+        "ramp": await ramp_status(),
+        "payment_count": await payment_count(),
     }

@@ -266,5 +266,65 @@ def demo_metrics() -> None:
         typer.echo(f"{t.tenant_id:12s} p95 wait = {value}")
 
 
+@demo_app.command("ramp")
+def demo_ramp(
+    version: str = typer.Option(None, "--version", help="Build ID to ramp toward"),
+    percent: float = typer.Option(None, "--percent", help="0-100; >=100 makes it current"),
+    clear: bool = typer.Option(False, "--clear", help="Remove any active ramp"),
+) -> None:
+    """Route a percentage of NEW sessions to another build (proof 2). In-flight
+    PINNED sessions on other versions keep running untouched."""
+    from app.demo import clear_ramp, ramp_status, set_ramp
+
+    if clear:
+        asyncio.run(clear_ramp())
+        typer.secho("ramp cleared", fg=typer.colors.GREEN)
+        return
+
+    if version is None or percent is None:
+        status = asyncio.run(ramp_status())
+        typer.echo(f"current:  {status.current_version or '(none)'}")
+        typer.echo(
+            f"ramping:  {status.ramping_version or '(none)'} "
+            f"@ {status.ramping_percentage:.0f}%"
+        )
+        return
+
+    try:
+        asyncio.run(set_ramp(version, percent))
+    except ValueError as e:
+        _fail(str(e))
+    typer.secho(f"ramping {percent:.0f}% of new sessions to {version}", fg=typer.colors.GREEN)
+
+
+@demo_app.command("kill-worker")
+def demo_kill_worker(
+    at_tool_boundary: bool = typer.Option(
+        True, "--at-tool-boundary/--no-at-tool-boundary",
+        help="Only supported mode: crash right after the next consequential tool call succeeds",
+    ),
+) -> None:
+    """Arm the worker to crash right after its next payment/dispute call
+    succeeds, but before Temporal records completion (proof 3). Does not kill
+    anything itself — restart the worker process yourself once it exits."""
+    from app.demo import arm_kill_switch
+
+    if not at_tool_boundary:
+        _fail("kill-worker only supports --at-tool-boundary — there is no timer-based mode")
+    asyncio.run(arm_kill_switch())
+    typer.secho(
+        "armed — the worker will exit right after its next payment/dispute call succeeds",
+        fg=typer.colors.YELLOW,
+    )
+
+
+@demo_app.command("payment-count")
+def demo_payment_count() -> None:
+    """How many payments actually reached the mocked provider (proof 3)."""
+    from app.demo import payment_count
+
+    typer.echo(f"payments recorded by the mock provider = {asyncio.run(payment_count())}")
+
+
 if __name__ == "__main__":
     app()

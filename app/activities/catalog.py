@@ -27,6 +27,10 @@ from app.activities.payment import issue_payment
 class ToolSpec:
     activity: Any
     options: dict[str, Any] = field(default_factory=dict)
+    # Consequential tools are guarded (E7.1 T3) — checked against the payment
+    # guardrail before they run. Not derived from `options` (both retry
+    # classes share the same dict shape); explicit here instead.
+    guarded: bool = False
 
 
 CONSEQUENTIAL = {
@@ -40,10 +44,26 @@ READ_ONLY = {
 }
 
 TOOL_CATALOG: dict[str, ToolSpec] = {
+    # issue_payment is NOT guarded: its input (invoice_id, amount_usd, payee)
+    # is pure structured data with no free-text field, and Guardrails' denied-
+    # topic classifier — a natural-language tool — produced false positives
+    # on it regardless of amount (see docs/DECISIONS.md). The threshold check
+    # that actually matters for payments is ApprovalGate, which is exact, not
+    # a language classifier guessing at a numeric policy.
     "issue_payment": ToolSpec(activity=issue_payment, options=CONSEQUENTIAL),
     "fetch_dispute_evidence": ToolSpec(activity=fetch_dispute_evidence, options=READ_ONLY),
-    "submit_dispute_response": ToolSpec(activity=submit_dispute_response, options=CONSEQUENTIAL),
+    # submit_dispute_response IS guarded: its `rationale` field is real free
+    # text an LLM authored from dispute evidence, a genuine surface for
+    # injected bypass-approval language to appear on. Confirmed discriminates
+    # correctly: a normal rationale passes, an injected one blocks.
+    "submit_dispute_response": ToolSpec(
+        activity=submit_dispute_response, options=CONSEQUENTIAL, guarded=True
+    ),
 }
+
+GUARDED_TOOLS: frozenset[str] = frozenset(
+    name for name, spec in TOOL_CATALOG.items() if spec.guarded
+)
 
 
 def all_activities() -> list[Any]:

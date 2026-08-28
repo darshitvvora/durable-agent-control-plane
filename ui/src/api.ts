@@ -1,4 +1,4 @@
-import type { AgentPackage, FleetStatus, Job, Lane, SessionState, Tenant } from "./types";
+import type { AgentPackage, FleetStatus, Job, Lane, RampStatus, SessionState, Tenant } from "./types";
 
 /** The API is the only thing the UI talks to — never Temporal directly (CLAUDE.md §2). */
 async function get<T>(path: string): Promise<T> {
@@ -35,6 +35,12 @@ export const api = {
     post<{ submitted: number }>(
       `/api/demo/flood?tenant_id=${encodeURIComponent(tenantId)}&count=${count}`,
     ),
+  setRamp: (buildId: string, percentage: number) =>
+    post<RampStatus>(
+      `/api/demo/ramp?build_id=${encodeURIComponent(buildId)}&percentage=${percentage}`,
+    ),
+  clearRamp: () => post<RampStatus>("/api/demo/ramp/clear"),
+  killWorker: () => post<{ armed: boolean }>("/api/demo/kill-worker"),
   approve: (jobId: string, interruptId: string, decision: string) =>
     post<unknown>(
       `/api/jobs/${encodeURIComponent(jobId)}/approval?interrupt_id=${encodeURIComponent(

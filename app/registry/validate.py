@@ -6,6 +6,8 @@ a clear error at `dos agent validate` time rather than a failed job later.
 
 from app.activities.catalog import TOOL_CATALOG
 from app.registry.manifest import Manifest, ManifestError, load_manifest, placeholders
+from app.registry.mcp_servers import MCP_SERVER_CATALOG
+from app.registry.output_models import OUTPUT_MODEL_CATALOG
 from app.temporal_client import model_registry
 
 RUNTIME_PLACEHOLDERS = {"tenant_id", "agent_id", "agent_version", "job_id"}
@@ -21,6 +23,8 @@ def validate(agent_id: str) -> list[str]:
     problems: list[str] = []
     problems += _check_model(manifest)
     problems += _check_tools(manifest)
+    problems += _check_mcp_servers(manifest)
+    problems += _check_output_model(manifest)
     problems += _check_placeholders(manifest, sop)
     problems += _check_approval_policy(manifest)
 
@@ -44,6 +48,27 @@ def _check_tools(manifest: Manifest) -> list[str]:
         for tool in manifest.tools
         if tool not in TOOL_CATALOG
     ]
+
+
+def _check_mcp_servers(manifest: Manifest) -> list[str]:
+    known = sorted(MCP_SERVER_CATALOG)
+    return [
+        f"mcp_server {server!r} is not in the catalog (known: {', '.join(known) or 'none'})"
+        for server in manifest.mcp_servers
+        if server not in MCP_SERVER_CATALOG
+    ]
+
+
+def _check_output_model(manifest: Manifest) -> list[str]:
+    if manifest.output_model is None:
+        return []
+    known = sorted(OUTPUT_MODEL_CATALOG)
+    if manifest.output_model not in OUTPUT_MODEL_CATALOG:
+        return [
+            f"output_model {manifest.output_model!r} is not in the catalog "
+            f"(known: {', '.join(known) or 'none'})"
+        ]
+    return []
 
 
 def _check_placeholders(manifest: Manifest, sop: str) -> list[str]:

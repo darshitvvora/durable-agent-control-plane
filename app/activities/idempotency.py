@@ -10,6 +10,7 @@ Deriving the key inside the activity is what makes it survive a worker crash —
 a key generated per invocation would differ on every retry and dedupe nothing.
 """
 
+import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
@@ -17,6 +18,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from app.registry import repository as repo
+from app.registry.models import KillSwitch
 
 
 def key(prefix: str) -> str:
@@ -50,6 +52,17 @@ async def run_once(
         raise ApplicationError(f"{prefix} already in flight for this key")
 
     result = await perform(idempotency_key)
+
+    # E6.2, proof 3: if armed, crash *here* — the external call above already
+    # succeeded, but completion below is not yet durably recorded. Disarm
+    # first so the restarted worker's retry of this same key doesn't loop.
+    if repo.get_kill_switch().armed:
+        repo.put_kill_switch(KillSwitch(armed=False))
+        activity.logger.warning(
+            "%s: kill switch armed, exiting now, key=%s", prefix, idempotency_key
+        )
+        os._exit(1)
+
     repo.complete_idempotency_record(idempotency_key, result)
     activity.logger.info("%s completed: key=%s", prefix, idempotency_key)
     return result, False

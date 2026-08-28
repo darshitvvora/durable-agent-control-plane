@@ -1,5 +1,37 @@
+import { useLayoutEffect, useRef } from "react";
 import type { Lane } from "../types";
 import { Panel, Well } from "./Panel";
+
+/** FLIP: when a lane re-sorts (proof 1's "lane overtaking"), ease the row to
+ * its new position instead of letting it snap there silently. */
+function useLaneFlip(order: string[]) {
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+  const prevTops = useRef<Map<string, number>>(new Map());
+  const orderKey = order.join(",");
+
+  useLayoutEffect(() => {
+    const rows = bodyRef.current?.querySelectorAll<HTMLElement>("[data-row-key]");
+    rows?.forEach((row) => {
+      const key = row.dataset.rowKey!;
+      const prevTop = prevTops.current.get(key);
+      const nextTop = row.getBoundingClientRect().top;
+      if (prevTop !== undefined) {
+        const delta = prevTop - nextTop;
+        if (delta) {
+          row.style.transition = "none";
+          row.style.transform = `translateY(${delta}px)`;
+          requestAnimationFrame(() => {
+            row.style.transition = "";
+            row.style.transform = "";
+          });
+        }
+      }
+      prevTops.current.set(key, nextTop);
+    });
+  }, [orderKey]);
+
+  return bodyRef;
+}
 
 /** Blocky character-cell bar — an htop lane, not a smooth progress bar. */
 function LoadBar({ filled, total }: { filled: number; total: number }) {
@@ -39,6 +71,7 @@ export function ProcessMonitor({
   onSelect: (tenantId: string) => void;
 }) {
   const busiest = Math.max(1, ...lanes.map((l) => (l.running ?? 0) + l.queued));
+  const bodyRef = useLaneFlip(lanes.map((l) => l.tenant_id));
 
   return (
     <Panel
@@ -62,15 +95,16 @@ export function ProcessMonitor({
               <th className="pb-2 text-right font-bold">p95</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody ref={bodyRef}>
             {lanes.map((lane) => {
               const load = (lane.running ?? 0) + lane.queued;
               const isSelected = lane.tenant_id === selected;
               return (
                 <tr
                   key={lane.tenant_id}
+                  data-row-key={lane.tenant_id}
                   onClick={() => onSelect(lane.tenant_id)}
-                  className={`cursor-pointer border-t border-[#2c2c22] ${
+                  className={`lane-row cursor-pointer border-t border-[#2c2c22] ${
                     isSelected ? "bg-well-hi" : ""
                   }`}
                 >

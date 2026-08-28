@@ -1,6 +1,6 @@
 id: invoice-exception
 name: Invoice Exception
-version: 1
+version: 3
 
 # Tier 2 — SOP plus a custom activity tool (issue_payment).
 tier: "2"
@@ -10,10 +10,20 @@ model: bedrock-claude
 tools:
   - issue_payment
 
-mcp_servers: []
+# v3 (E7.1 T1): vendor risk lookup via AgentCore Gateway/MCP, re-listed every
+# turn. "vendor-directory" is a catalog key, not the Gateway's raw AWS URL —
+# see app/registry/mcp_servers.py.
+mcp_servers:
+  - vendor-directory
 
 parameters:
   escalation_threshold_usd: "200"
+
+# v2 (E6.1 T4): same policy as v1, but the answer is a validated
+# InvoiceDecision object instead of free text — proof 2's visible difference
+# between a v1 session (still running, still free text) and a v2 session
+# (started after the deploy, structured). See app/registry/output_models.py.
+output_model: InvoiceDecision
 
 # Payments above the threshold pause for a human reviewer. This is the tool call
 # stage beat 3 kills the worker on, so it must stay idempotent.
