@@ -371,4 +371,39 @@ Note the gateway URL for `.env` (`AGENTCORE_GATEWAY_URL`) — this is what `Temp
 
 ---
 
-<!-- Next manual steps land here as we build E7.2 (AgentCore Code Interpreter, S3 bucket), E7.3 (AgentCore Runtime), and E9 (IAM roles, Lambda, App Runner, Amplify). -->
+## 2026-08-29 — AgentCore Code Interpreter (E7.2 T1) — no resource to create
+
+`aws.codeinterpreter.v1` is AWS's own shared identifier, not a per-account resource — there is nothing to create here, unlike Gateway/Memory/Guardrails. The local `SolutionsArchitecture/AWSAdministratorAccess` profile already covers `bedrock-agentcore:StartCodeInterpreterSession` / `InvokeCodeInterpreter` / `StopCodeInterpreterSession`, confirmed by running `dos agent test dispute-resolution` for real rather than guessing at a policy.
+
+**Flag for E9 (Lambda worker execution role):** the eventual least-privilege execution role will need these three actions explicitly, scoped to `resource: "arn:aws:bedrock-agentcore:*:*:code-interpreter/aws.codeinterpreter.v1"` — revisit when E9 writes the SAM template's IAM policy; not needed for local dev under AdministratorAccess.
+
+---
+
+## 2026-08-29 — S3 bucket for External Storage claim-check (E7.2 T3, Preview)
+
+Holds large payloads offloaded by Temporal's External Storage feature (Public Preview) — currently just the Dispute Resolution agent's `analyze_dispute_risk` report, which is deliberately sized to cross the default 256 KiB offload threshold. See `docs/DECISIONS.md` for why this uses a plain `boto3` S3 client (`app/temporal_client.py`'s `_SyncBoto3S3Client`) instead of the SDK's suggested `aioboto3` driver.
+
+**Console:**
+1. S3 console → **Buckets** → **Create bucket**.
+2. Bucket name: `durable-agent-control-plane-payloads-<your-account-id>` (S3 bucket names are globally unique — append your account id).
+3. Region: `us-east-1` (must match `AWS_REGION` in `.env`).
+4. Leave **Block all public access** enabled (default) — nothing here is meant to be public.
+5. Create the bucket, then **Properties** tab → confirm default (SSE-S3) encryption is enabled.
+6. **Tags** tab (bucket-level tags live under **Properties**, not the creation wizard) → add `Project` = `durable-agent-control-plane`.
+
+**CLI fallback:**
+```bash
+aws s3api create-bucket \
+  --bucket durable-agent-control-plane-payloads-<your-account-id> \
+  --region us-east-1
+
+aws s3api put-bucket-tagging \
+  --bucket durable-agent-control-plane-payloads-<your-account-id> \
+  --tagging 'TagSet=[{Key=Project,Value=durable-agent-control-plane}]'
+```
+
+**Verify:** `aws s3api head-bucket --bucket durable-agent-control-plane-payloads-<your-account-id>` returns no error. Note the bucket name for `.env` (`S3_BUCKET_NAME`) — leaving it blank keeps payloads inline (no-op), same convention as `AGENTCORE_MEMORY_ID`/`AGENTCORE_GATEWAY_URL`.
+
+---
+
+<!-- Next manual steps land here as we build E7.3 (AgentCore Runtime) and E9 (IAM roles, Lambda, App Runner, Amplify). -->

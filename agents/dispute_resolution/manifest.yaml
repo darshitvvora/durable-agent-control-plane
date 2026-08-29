@@ -1,8 +1,8 @@
 id: dispute-resolution
 name: Dispute Resolution
-version: 1
+version: 2
 
-# Tier 2 — SOP plus custom activity tools: one read-only lookup and one
+# Tier 2 — SOP plus custom activity tools: two read-only lookups and one
 # consequential filing.
 tier: "2"
 
@@ -10,6 +10,7 @@ model: bedrock-claude
 
 tools:
   - fetch_dispute_evidence
+  - analyze_dispute_risk
   - submit_dispute_response
 
 mcp_servers: []

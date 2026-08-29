@@ -26,6 +26,18 @@ def key(prefix: str) -> str:
     return f"{prefix}:{info.workflow_id}:{info.activity_id}"
 
 
+def maybe_kill(context: str) -> None:
+    """If armed, crash the worker process now. Disarms first so the restarted
+    worker's retry doesn't loop. Shared by `run_once` (right after a
+    consequential side effect succeeds) and any other activity that wants to
+    exercise the same kill/resume mechanism at its own real external-call
+    boundary (E7.2 T2 — the sandbox activity's Code Interpreter session)."""
+    if repo.get_kill_switch().armed:
+        repo.put_kill_switch(KillSwitch(armed=False))
+        activity.logger.warning("kill switch armed, exiting now: %s", context)
+        os._exit(1)
+
+
 async def run_once(
     prefix: str, perform: Callable[[str], Awaitable[dict]]
 ) -> tuple[dict, bool]:
@@ -54,14 +66,8 @@ async def run_once(
     result = await perform(idempotency_key)
 
     # E6.2, proof 3: if armed, crash *here* — the external call above already
-    # succeeded, but completion below is not yet durably recorded. Disarm
-    # first so the restarted worker's retry of this same key doesn't loop.
-    if repo.get_kill_switch().armed:
-        repo.put_kill_switch(KillSwitch(armed=False))
-        activity.logger.warning(
-            "%s: kill switch armed, exiting now, key=%s", prefix, idempotency_key
-        )
-        os._exit(1)
+    # succeeded, but completion below is not yet durably recorded.
+    maybe_kill(f"{prefix} key={idempotency_key}")
 
     repo.complete_idempotency_record(idempotency_key, result)
     activity.logger.info("%s completed: key=%s", prefix, idempotency_key)

@@ -72,6 +72,8 @@ export function SessionTerminal({ job }: { job: Job | null }) {
     onWorkflow("job_finished", (p) => {
       append({ kind: "note", text: `session finished — ${p.stop_reason ?? ""}` });
       setLive(false);
+      // Claim-check numbers (E7.2 T4) only settle once the run has closed.
+      void api.jobState(job.job_id).then((s) => !cancelled && setState(s));
     });
 
     // The polled fallback: if the stream never opens, the pane still shows real
@@ -89,6 +91,16 @@ export function SessionTerminal({ job }: { job: Job | null }) {
   }, [entries]);
 
   const pending = state?.pending_approval ?? null;
+  // Storage pane (E7.2 T4) — only when this session actually offloaded a
+  // payload via External Storage; most sessions never trigger it.
+  const storage =
+    state?.external_payload_count && state.external_payload_count > 0
+      ? {
+          externalKB: Math.round(state.external_payload_size_bytes! / 1024),
+          historyKB: Math.round((state.history_size_bytes ?? 0) / 1024),
+          count: state.external_payload_count,
+        }
+      : null;
 
   return (
     <Panel
@@ -144,6 +156,13 @@ export function SessionTerminal({ job }: { job: Job | null }) {
           {live && <span className="caret text-signal">▊</span>}
         </div>
       </Well>
+
+      {storage && (
+        <p className="mt-2 shrink-0 font-mono text-[13px] text-ink-dim">
+          storage — {storage.count} payload{storage.count === 1 ? "" : "s"} offloaded to S3 (
+          {storage.externalKB} KB) · event history {storage.historyKB} KB
+        </p>
+      )}
 
       {pending && (
         <div className="raised mt-2 shrink-0 bg-signal p-3">

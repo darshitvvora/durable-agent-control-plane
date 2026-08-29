@@ -67,4 +67,7 @@ async def get_job_state(request: Request, job_id: str) -> SessionState:
         status=desc.status.name if desc.status is not None else "UNKNOWN",
         worker_version=worker_version,
         pending_approval=pending,
+        history_size_bytes=info.history_size_bytes,
+        external_payload_size_bytes=info.external_payload_size_bytes,
+        external_payload_count=info.external_payload_count,
     )

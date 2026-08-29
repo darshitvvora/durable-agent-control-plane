@@ -64,6 +64,9 @@ export type SessionState = {
     tool_input: Record<string, unknown>;
     policy: string;
   } | null;
+  history_size_bytes: number | null;
+  external_payload_size_bytes: number | null;
+  external_payload_count: number | null;
 };
 
 /** One line in the session terminal, from the SSE stream. */

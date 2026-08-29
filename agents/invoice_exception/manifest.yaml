@@ -1,14 +1,18 @@
 id: invoice-exception
 name: Invoice Exception
-version: 3
+version: 4
 
-# Tier 2 — SOP plus a custom activity tool (issue_payment).
+# Tier 2 — SOP plus custom activity tools.
 tier: "2"
 
 model: bedrock-claude
 
 tools:
   - issue_payment
+  # v4 (E7.4 T1): a real Strands Swarm handoff (reviewer -> fraud specialist),
+  # run entirely inside one Activity — see app/activities/swarm.py and
+  # docs/DECISIONS.md for why it can't run as workflow code.
+  - investigate_fraud_swarm
 
 # v3 (E7.1 T1): vendor risk lookup via AgentCore Gateway/MCP, re-listed every
 # turn. "vendor-directory" is a catalog key, not the Gateway's raw AWS URL —

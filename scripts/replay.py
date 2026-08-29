@@ -48,7 +48,19 @@ async def main() -> None:
     version = f"{DEPLOYMENT_NAME}:{get_settings().build_id}"
     print(f"replaying histories for {version}")
 
-    replayer = Replayer(workflows=[AgentJobWorkflow], plugins=[strands_plugin()])
+    # Reuse the *client's* converter, not a fresh default one. Once External
+    # Storage is configured (E7.2 T3), histories contain claim-check
+    # references instead of the payloads themselves, and a replayer without
+    # the S3 driver fails every such history with
+    # "[TMPRL1105] Detected externally stored payload(s) but external storage
+    # is not configured" — a config gap that looks like a determinism failure
+    # but isn't. Passing an already-composed converter is also safe for the
+    # Strands plugin: its hook leaves any non-default converter untouched.
+    replayer = Replayer(
+        workflows=[AgentJobWorkflow],
+        plugins=[strands_plugin()],
+        data_converter=client.data_converter,
+    )
     results = await replayer.replay_workflows(
         _histories(client, counter),
         raise_on_replay_failure=False,

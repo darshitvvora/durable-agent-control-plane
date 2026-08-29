@@ -78,7 +78,12 @@ async def submit_dispute_response(request: DisputeResponseRequest) -> DisputeRes
 
     async def perform(idempotency_key: str) -> dict:
         settings = get_settings()
-        case_id = f"case-{idempotency_key.rsplit(':', 1)[-1]}"
+        # The full key, not just its activity_id suffix: activity_id is a
+        # small per-workflow counter, so two different jobs can easily land
+        # on the same one (same collision class E6.2 caught in payment.py's
+        # confirmation_id — confirmed live here too by E7.2's two-concurrent-
+        # dispute-jobs isolation test, both landing on "case-10").
+        case_id = f"case-{idempotency_key.replace(':', '-')}"
         async with httpx.AsyncClient(timeout=DISPUTE_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 f"{settings.mockoon_base_url}/dispute-responses",

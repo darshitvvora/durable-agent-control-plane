@@ -42,6 +42,13 @@ class SessionState(BaseModel):
     # The session's worker deployment version — proof 2's per-session version badge.
     worker_version: str | None = None
     pending_approval: PendingApproval | None = None
+    # External Storage claim-check numbers (E7.2 T3/T4, Preview) — straight off
+    # WorkflowExecutionInfo, never computed client-side. history_size_bytes is
+    # always present; the external_* pair is 0 unless something in this
+    # session's payloads actually crossed the offload threshold.
+    history_size_bytes: int | None = None
+    external_payload_size_bytes: int | None = None
+    external_payload_count: int | None = None
 
 
 class UIEvent(BaseModel):

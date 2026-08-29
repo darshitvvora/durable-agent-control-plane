@@ -23,6 +23,7 @@ from app.registry.priority import resolve_priority
 from app.temporal_client import connect
 from app.workflows.agent_job import AgentJobWorkflow
 from app.workflows.models import AgentJobInput
+from scripts._approval import result_with_auto_approval
 
 TRIAGE_PROMPT = (
     "Alert: checkout-api p99 latency crossed 2s at 14:02 UTC, error rate 4%. "
@@ -73,17 +74,7 @@ async def run_agent(client, agent_id: str, tenant: str, prompt: str) -> tuple[st
     # Dispute Resolution's evidence amount is randomised by Mockoon (E2.3
     # DECISIONS.md) and gates approval above $500 — auto-approve if it lands
     # there, the same way a reviewer would, rather than hanging forever.
-    while True:
-        pending = await handle.query(AgentJobWorkflow.pending_approval)
-        if pending is None:
-            break
-        print(f"  auto-approving {pending.tool} (policy: {pending.policy})")
-        await handle.signal(
-            AgentJobWorkflow.submit_approval, args=[pending.interrupt_id, "approve"]
-        )
-        await asyncio.sleep(1)
-
-    outcome = await handle.result()
+    outcome = await result_with_auto_approval(handle)
 
     scheduled = sorted(
         {

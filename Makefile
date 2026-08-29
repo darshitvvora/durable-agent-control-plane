@@ -1,5 +1,6 @@
 .PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
 	verify-tenant-priority verify-streaming verify-agents verify-versioning verify-pinning verify-kill-resume \
+	verify-sandbox-isolation verify-external-storage \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
@@ -70,6 +71,12 @@ verify-pinning:
 # needs Mockoon running — spawns its OWN worker process(es), do not run `make worker` alongside it
 verify-kill-resume:
 	uv run python -m scripts.verify_kill_resume
+
+verify-sandbox-isolation:
+	uv run python -m scripts.verify_sandbox_isolation
+
+verify-external-storage:
+	uv run python -m scripts.verify_external_storage
 
 # non-determinism guard — replays real histories from Temporal Cloud (script lands with E1.1)
 replay:
