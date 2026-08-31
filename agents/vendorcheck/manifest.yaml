@@ -1,0 +1,26 @@
+id: vendorcheck
+name: VendorCheck
+version: 1
+
+# Tier 3 — hosted. The agent itself does not live in this repo: it runs on
+# AgentCore Runtime (source kept at infra/hosted/vendorcheck/ for reference,
+# deployed separately per docs/AWS_SETUP.md). This control plane reaches it
+# through one invoke_hosted_agent activity.
+tier: "3"
+
+# Ignored for tier 3 — the hosted agent chooses its own model, inside its own
+# container. Present only because the manifest schema requires it.
+model: bedrock-claude
+
+# Deliberately empty, and *must* stay empty: a hosted agent's tools live on
+# the far side of the boundary. Anything listed here would silently do
+# nothing, so `dos agent validate` rejects it.
+tools: []
+mcp_servers: []
+
+parameters: {}
+
+# runtime_arn is intentionally NOT pinned here. It is account-specific, so it
+# resolves from AGENTCORE_RUNTIME_ENDPOINT at publish time — which is also
+# what lets a hosted agent be registered by ARN alone, with no package on
+# disk at all (E7.3 T2, `dos agent register-hosted`).

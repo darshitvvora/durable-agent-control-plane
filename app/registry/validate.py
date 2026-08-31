@@ -7,6 +7,7 @@ a clear error at `dos agent validate` time rather than a failed job later.
 from app.activities.catalog import TOOL_CATALOG
 from app.registry.manifest import Manifest, ManifestError, load_manifest, placeholders
 from app.registry.mcp_servers import MCP_SERVER_CATALOG
+from app.registry.models import AgentTier
 from app.registry.output_models import OUTPUT_MODEL_CATALOG
 from app.temporal_client import model_registry
 
@@ -27,6 +28,7 @@ def validate(agent_id: str) -> list[str]:
     problems += _check_output_model(manifest)
     problems += _check_placeholders(manifest, sop)
     problems += _check_approval_policy(manifest)
+    problems += _check_hosted(manifest)
 
     if not sop.strip():
         problems.append("procedure.sop.md is empty — it becomes the system prompt")
@@ -82,6 +84,33 @@ def _check_placeholders(manifest: Manifest, sop: str) -> list[str]:
     unused = sorted(set(manifest.parameters) - placeholders(sop))
     problems += [f"parameter {name!r} is declared but never used in procedure.sop.md"
                  for name in unused]
+    return problems
+
+
+def _check_hosted(manifest: Manifest) -> list[str]:
+    """A tier-3 agent runs its own loop on AgentCore Runtime, so anything this
+    control plane would attach to a native agent has no effect on it. Silently
+    ignoring these would be worse than refusing them — an author would think a
+    payment was gated when nothing was gating it (E7.3)."""
+    if manifest.tier != AgentTier.HOSTED:
+        return []
+    problems = [
+        f"tier 3 (hosted) agent declares {field}, which the hosted agent never sees — "
+        "its tools live on the far side of the runtime boundary"
+        for field, declared in (("tools", manifest.tools), ("mcp_servers", manifest.mcp_servers))
+        if declared
+    ]
+    if manifest.approval_policy is not None:
+        problems.append(
+            "tier 3 (hosted) agent declares an approval_policy, but ApprovalGate can only "
+            "gate tool calls this control plane dispatches — a hosted agent's calls are "
+            "invisible to it and would run ungated"
+        )
+    if manifest.output_model is not None:
+        problems.append(
+            "tier 3 (hosted) agent declares an output_model, but structured output is a "
+            "Strands agent setting and this control plane does not construct that agent"
+        )
     return problems
 
 

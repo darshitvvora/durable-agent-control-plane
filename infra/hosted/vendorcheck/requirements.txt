@@ -1,0 +1,6 @@
+# Dependencies for the hosted VendorCheck agent (E7.3). Deliberately minimal
+# and independent of this repo's pyproject.toml — this agent is deployed to
+# AgentCore Runtime as its own artifact and shares no environment with the
+# control plane's worker.
+bedrock-agentcore
+strands-agents

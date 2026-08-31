@@ -406,4 +406,93 @@ aws s3api put-bucket-tagging \
 
 ---
 
-<!-- Next manual steps land here as we build E7.3 (AgentCore Runtime) and E9 (IAM roles, Lambda, App Runner, Amplify). -->
+## 2026-08-29 — AgentCore Runtime: the hosted VendorCheck agent (E7.3 / E2.3 T4)
+
+Deploys `infra/hosted/vendorcheck/main.py` — a self-contained Strands compliance-screening agent — to AgentCore Runtime. This is the "third-party lane": once deployed it runs in its own container, on AWS, with its own agent loop, and this control plane reaches it through a single `InvokeAgentRuntime` call. Nothing about it shares an environment with our worker.
+
+**Use the `CodeZip` build type (the CLI default) — no Docker required.** AgentCore Runtime runs on ARM64 (Graviton); `CodeZip` uploads a zip and the CLI handles architecture compatibility, so you don't need a local ARM64 container build. `Container` is only needed for custom system-level dependencies, which this agent has none of.
+
+**Prerequisites** (per the AgentCore CLI docs): Node.js 20+, Python 3.10+, AWS CDK installed, AWS credentials configured, and Claude model access already enabled in Bedrock (this project has that from the 2026-08-21 Bedrock step).
+
+### 1. Install the AgentCore CLI
+
+```bash
+npm install -g @aws/agentcore
+agentcore --help          # sanity check
+```
+
+### 2. Scaffold the project
+
+Run this **outside** the repo (e.g. `~/agentcore-projects/`) — the CLI generates its own project tree with CDK config, and it should not be nested inside this repo's git tree:
+
+```bash
+agentcore create --name VendorCheck \
+  --framework Strands --protocol HTTP \
+  --model-provider Bedrock --memory none --build CodeZip
+```
+
+This generates `VendorCheck/app/VendorCheck/main.py` plus `agentcore/agentcore.json`.
+
+### 3. Replace the scaffolded agent with ours
+
+```bash
+cp <this-repo>/infra/hosted/vendorcheck/main.py VendorCheck/app/VendorCheck/main.py
+```
+
+Make sure `bedrock-agentcore` and `strands-agents` are in the generated project's `app/VendorCheck/pyproject.toml` dependencies (the Strands scaffold normally includes both; `infra/hosted/vendorcheck/requirements.txt` records what the agent actually imports).
+
+### 4. (Optional but recommended) Test locally before deploying
+
+**This needs two terminals.** `agentcore dev "<prompt>"` does not start the server — it sends a prompt to an already-running one, and fails with `Error: Dev server not running on port 8080` if you skip the first step.
+
+```bash
+# Terminal A — starts the local server on :8080, leave it running
+cd VendorCheck
+agentcore dev --logs
+```
+
+```bash
+# Terminal B — once Terminal A reports it is up
+cd VendorCheck
+agentcore dev "Screen Initech Supply for compliance."
+```
+
+Expect a **review** verdict (unverified beneficial owner, CY jurisdiction, 3 adverse media). "Meridian Holdings" should return **blocked**; "Globex Retail" should return **clear**. Catching a bad verdict here is much cheaper than after deploying.
+
+### 5. Deploy
+
+```bash
+agentcore deploy -y
+```
+The CLI packages the code, then uses CDK to create the IAM role, the runtime, and supporting resources.
+
+### 6. Get the ARN
+
+```bash
+agentcore status
+```
+Copy the agent runtime ARN (`arn:aws:bedrock-agentcore:us-east-1:<account>:runtime/...`) into `.env` as `AGENTCORE_RUNTIME_ENDPOINT`. Leaving it blank keeps the hosted lane switched off, the same no-op convention as `AGENTCORE_MEMORY_ID` / `S3_BUCKET_NAME`.
+
+### 7. Verify independently of our code
+
+```bash
+agentcore invoke "Screen Meridian Holdings for compliance."
+```
+Confirming the runtime answers correctly **before** wiring our activity to it isolates "is the hosted agent good" from "is our Temporal/boto3 wiring good" — the same sequencing that made the Gateway (E7.1 T1) and Memory (E7.1 T2) bugs quick to find. After that, `make verify-hosted` exercises it through the control plane.
+
+**Tagging:** the CLI provisions via CDK, so resources are tagged by the generated stack rather than by a flag on a create call. After deploying, apply the project tag to the runtime so it shows up in the account-wide query:
+```bash
+aws bedrock-agentcore-control tag-resource \
+  --resource-arn "<the runtime ARN>" \
+  --tags '{"Project":"durable-agent-control-plane"}' \
+  --region us-east-1
+```
+
+**Teardown when you're done with it** (this one bills while it exists, unlike the Gateway/Memory resources):
+```bash
+cd VendorCheck && agentcore destroy   # or `agentcore remove`; see `agentcore --help`
+```
+
+---
+
+<!-- Next manual steps land here as we build E9 (IAM roles, Lambda, App Runner, Amplify). -->

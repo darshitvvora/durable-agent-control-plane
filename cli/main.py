@@ -24,7 +24,7 @@ from app.registry.manifest import (
     package_dir,
     to_package,
 )
-from app.registry.models import Tenant, TenantTier
+from app.registry.models import AgentPackage, AgentTier, Tenant, TenantTier
 from app.registry.validate import validate as validate_package
 
 app = typer.Typer(help="Durable Agent Control Plane CLI", no_args_is_help=True)
@@ -103,6 +103,45 @@ def agent_publish(agent_id: str) -> None:
     repo.put_agent_package(package)
     typer.secho(
         f"published {package.agent_id} v{package.version} to the registry", fg=typer.colors.GREEN
+    )
+
+
+@agent_app.command("register-hosted")
+def agent_register_hosted(
+    agent_id: str,
+    name: str = typer.Option(..., "--name"),
+    runtime_arn: str = typer.Option(..., "--runtime-arn", help="AgentCore Runtime ARN"),
+    version: int = typer.Option(1, "--version"),
+    description: str = typer.Option(
+        "", "--description", help="what this agent does, shown in the agent store"
+    ),
+) -> None:
+    """Register a hosted (tier 3) agent by ARN alone — no package on disk (E7.3 T2).
+
+    The whole point of the hosted lane: installing a third-party agent needs
+    neither repo access nor a deploy, just an ARN someone hands you. Contrast
+    `publish`, which reads agents/<id>/ from disk.
+    """
+    if not runtime_arn.startswith("arn:aws:bedrock-agentcore:"):
+        _fail(
+            f"{runtime_arn!r} is not an AgentCore Runtime ARN "
+            "(expected arn:aws:bedrock-agentcore:<region>:<account>:runtime/...)"
+        )
+
+    package = AgentPackage(
+        agent_id=agent_id,
+        version=version,
+        name=name,
+        tier=AgentTier.HOSTED,
+        model="bedrock-claude",  # ignored for tier 3; the hosted agent picks its own
+        # No SOP: a hosted agent carries its own system prompt. This text is
+        # never sent to it — it is what the agent store shows a tenant.
+        system_prompt=description or f"{name} — hosted on AgentCore Runtime, ARN {runtime_arn}",
+        runtime_arn=runtime_arn,
+    )
+    repo.put_agent_package(package)
+    typer.secho(
+        f"registered hosted agent {agent_id} v{version} -> {runtime_arn}", fg=typer.colors.GREEN
     )
 
 

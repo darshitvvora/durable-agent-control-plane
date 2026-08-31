@@ -16,9 +16,22 @@ class Settings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _blank_env_vars_are_unset(cls, data: object) -> object:
-        """A blank `KEY=` line in .env loads as "", not unset — treat it as unset."""
+        """A blank `KEY=` line in .env loads as "", not unset — treat it as unset.
+
+        Also treat a value that is only a comment as unset. `KEY=value # note`
+        has its comment stripped by dotenv, but `KEY=` followed by whitespace
+        and `# note` does not — the whole comment becomes the value. That bit
+        for real (E7.3: `AGENTCORE_RUNTIME_ENDPOINT` resolved to the string
+        "# hosted-agent lane (VendorCheck)", which is truthy, so every
+        "is it configured?" check passed and the failure surfaced much later
+        as a bad ARN). No setting here can legitimately start with '#'.
+        """
         if isinstance(data, dict):
-            return {k: (None if v == "" else v) for k, v in data.items()}
+            return {
+                k: (None if isinstance(v, str) and (not v.strip() or v.lstrip().startswith("#"))
+                    else v)
+                for k, v in data.items()
+            }
         return data
 
     app_env: str = "local"  # local | cloud — laptop vs deployed, not local-vs-real-AWS

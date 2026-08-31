@@ -23,10 +23,12 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.contrib.strands import workflow as strands_workflow
 
     from app.activities.catalog import GUARDED_TOOLS, TOOL_CATALOG
+    from app.activities.hosted import invoke_hosted_agent
     from app.activities.memory import recall_tenant_memory, record_tenant_memory
     from app.activities.registry import mark_job_started, resolve_agent_package
     from app.registry.manifest import render_sop
     from app.registry.mcp_servers import MCP_SERVER_CATALOG
+    from app.registry.models import AgentTier
     from app.registry.output_models import OUTPUT_MODEL_CATALOG
     from app.workflows.approval import ApprovalGate
     from app.workflows.guardrail import GuardrailGate
@@ -35,6 +37,10 @@ MODEL_START_TO_CLOSE = timedelta(seconds=120)
 REGISTRY_START_TO_CLOSE = timedelta(seconds=10)
 JOB_STARTED_START_TO_CLOSE = timedelta(seconds=10)
 MEMORY_START_TO_CLOSE = timedelta(seconds=10)
+# A hosted agent runs its whole loop inside this one call (E7.3), so it needs
+# far more headroom than a single model call — and only 2 attempts, since a
+# retry re-runs that entire loop from scratch.
+HOSTED_START_TO_CLOSE = timedelta(seconds=300)
 JOB_EVENTS_TOPIC = "job_events"
 # Raw Strands StreamEvents land here, published from inside the plugin's
 # invoke_model_streaming activity (E4.2). Separate topic from job_events
@@ -123,6 +129,79 @@ class AgentJobWorkflow:
                 UIEvent(job_id=job.job_id, kind="memory_recall", payload={"notes": recalled})
             )
 
+        # The one branch in this workflow, and it is on a manifest *field*, not
+        # on an agent id — tier 3 means the agent runs its own loop somewhere
+        # else, so there is no Strands agent to build here at all (E7.3).
+        # Everything after this point is shared by both lanes.
+        if package.tier == AgentTier.HOSTED:
+            stop_reason, output = await self._run_hosted(job, package)
+        else:
+            stop_reason, output = await self._run_native(job, package, recalled)
+
+        workflow.logger.info("job finished: stop_reason=%s", stop_reason)
+        self.events.publish(
+            UIEvent(
+                job_id=job.job_id,
+                kind="job_finished",
+                payload={"stop_reason": stop_reason},
+            )
+        )
+
+        # Write this job's outcome for future recall by the same tenant
+        # (E7.1 T2). Best-effort: a memory write failing is never a reason to
+        # fail a job it is only summarizing, so its own retries are capped low
+        # and any remaining failure is swallowed, not raised.
+        summary = f"{job.agent_id} v{job.agent_version}: {stop_reason} — {output[:200]}"
+        try:
+            await workflow.execute_activity(
+                record_tenant_memory,
+                args=[job.tenant_id, summary],
+                start_to_close_timeout=MEMORY_START_TO_CLOSE,
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+        except ActivityError:
+            workflow.logger.warning("record_tenant_memory failed for %s, continuing", job.job_id)
+
+        # Hold the run open briefly so a subscriber's next poll delivers this
+        # terminal event before the workflow closes and the log is gone —
+        # same reasoning as the workflow_streams samples' OrderWorkflow/LLMWorkflow.
+        await workflow.sleep(timedelta(milliseconds=500))
+
+        return JobOutcome(
+            job_id=job.job_id,
+            agent_id=job.agent_id,
+            agent_version=job.agent_version,
+            stop_reason=stop_reason,
+            output=output,
+        )
+
+    async def _run_hosted(self, job: AgentJobInput, package: Any) -> tuple[str, str]:
+        """Tier 3: one call to someone else's agent loop on AgentCore Runtime.
+
+        No tools, no MCP, no approval gate, no guardrail hook, no token stream
+        — none of those exist on this side of the boundary. That is the tier-3
+        tradeoff, documented in docs/MULTI_AGENT.md, not an omission.
+        """
+        self.events.publish(
+            UIEvent(
+                job_id=job.job_id,
+                kind="tool_call",
+                payload={"tool": f"hosted:{package.agent_id}"},
+            )
+        )
+        output = await workflow.execute_activity(
+            invoke_hosted_agent,
+            args=[package.runtime_arn or "", job.job_id, job.prompt],
+            start_to_close_timeout=HOSTED_START_TO_CLOSE,
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+        return "end_turn", output
+
+    async def _run_native(
+        self, job: AgentJobInput, package: Any, recalled: list[str]
+    ) -> tuple[str, str]:
+        """Tiers 1 and 2: this control plane runs the agent loop itself, with
+        every model and tool call dispatched as its own Temporal activity."""
         # Tools come from the manifest, resolved against the catalog. An unknown
         # name is the agent author's error and cannot be fixed by retrying, so it
         # fails the workflow rather than silently running a toolless agent.
@@ -244,41 +323,4 @@ class AgentJobWorkflow:
             }
             result = await agent.invoke_async([response])
 
-        workflow.logger.info("job finished: stop_reason=%s", result.stop_reason)
-        self.events.publish(
-            UIEvent(
-                job_id=job.job_id,
-                kind="job_finished",
-                payload={"stop_reason": str(result.stop_reason)},
-            )
-        )
-
-        # Write this job's outcome for future recall by the same tenant
-        # (E7.1 T2). Best-effort: a memory write failing is never a reason to
-        # fail a job it is only summarizing, so its own retries are capped low
-        # and any remaining failure is swallowed, not raised.
-        summary = (
-            f"{job.agent_id} v{job.agent_version}: {result.stop_reason} — {str(result)[:200]}"
-        )
-        try:
-            await workflow.execute_activity(
-                record_tenant_memory,
-                args=[job.tenant_id, summary],
-                start_to_close_timeout=MEMORY_START_TO_CLOSE,
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            )
-        except ActivityError:
-            workflow.logger.warning("record_tenant_memory failed for %s, continuing", job.job_id)
-
-        # Hold the run open briefly so a subscriber's next poll delivers this
-        # terminal event before the workflow closes and the log is gone —
-        # same reasoning as the workflow_streams samples' OrderWorkflow/LLMWorkflow.
-        await workflow.sleep(timedelta(milliseconds=500))
-
-        return JobOutcome(
-            job_id=job.job_id,
-            agent_id=job.agent_id,
-            agent_version=job.agent_version,
-            stop_reason=str(result.stop_reason),
-            output=str(result),
-        )
+        return str(result.stop_reason), str(result)

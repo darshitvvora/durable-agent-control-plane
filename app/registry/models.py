@@ -119,6 +119,13 @@ class AgentPackage(BaseModel):
     approval_policy: ApprovalPolicy | None = None
     guardrail_arn: str | None = None
     output_model: str | None = None
+    # Tier 3 (hosted) only — the AgentCore Runtime this agent lives on (E7.3).
+    # Unlike the Gateway URL (worker-side only, app/temporal_client.py), this
+    # lives in the registry row on purpose: registering a hosted agent by ARN
+    # is the *entire* installation path for the hosted lane, with no package
+    # on disk and no repo access (E7.3 T2). An ARN is an identifier, not a
+    # credential — invoking it still requires IAM permission.
+    runtime_arn: str | None = None
 
 
 class JobStatus(StrEnum):

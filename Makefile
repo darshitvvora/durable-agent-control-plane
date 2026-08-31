@@ -1,6 +1,6 @@
 .PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
 	verify-tenant-priority verify-streaming verify-agents verify-versioning verify-pinning verify-kill-resume \
-	verify-sandbox-isolation verify-external-storage \
+	verify-sandbox-isolation verify-external-storage verify-hosted \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
@@ -77,6 +77,9 @@ verify-sandbox-isolation:
 
 verify-external-storage:
 	uv run python -m scripts.verify_external_storage
+
+verify-hosted:
+	uv run python -m scripts.verify_hosted
 
 # non-determinism guard — replays real histories from Temporal Cloud (script lands with E1.1)
 replay:

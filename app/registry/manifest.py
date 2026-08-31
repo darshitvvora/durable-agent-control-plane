@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from app.config import get_settings
 from app.registry.models import AgentPackage, AgentTier, ApprovalPolicy
 
 AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
@@ -47,6 +48,10 @@ class Manifest(BaseModel):
     approval_policy: ApprovalPolicy | None = None
     guardrail_arn: str | None = None
     output_model: str | None = None
+    # Tier 3 only. Usually left unset even for a hosted package: the ARN is
+    # account-specific, so it normally comes from AGENTCORE_RUNTIME_ENDPOINT
+    # at publish time rather than being committed to a manifest (E7.3).
+    runtime_arn: str | None = None
 
 
 def placeholders(sop: str) -> set[str]:
@@ -113,6 +118,13 @@ def to_package(manifest: Manifest, sop: str) -> AgentPackage:
         approval_policy=manifest.approval_policy,
         guardrail_arn=manifest.guardrail_arn,
         output_model=manifest.output_model,
+        # Manifest wins if it pins one; otherwise a tier-3 package picks up the
+        # environment's runtime, so the ARN never has to be committed to disk.
+        runtime_arn=(
+            manifest.runtime_arn
+            or (get_settings().agentcore_runtime_endpoint
+                if manifest.tier == AgentTier.HOSTED else None)
+        ),
     )
 
 

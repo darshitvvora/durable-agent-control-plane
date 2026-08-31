@@ -15,6 +15,7 @@ from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxR
 
 from app.activities.catalog import all_activities
 from app.activities.guardrail import apply_guardrail
+from app.activities.hosted import invoke_hosted_agent
 from app.activities.memory import recall_tenant_memory, record_tenant_memory
 from app.activities.registry import mark_job_started, resolve_agent_package
 from app.config import get_settings
@@ -38,6 +39,9 @@ async def main() -> None:
             recall_tenant_memory,
             record_tenant_memory,
             apply_guardrail,
+            # Not a tool — the workflow calls it directly for tier-3 agents
+            # (E7.3), like memory/guardrail, so it isn't in TOOL_CATALOG.
+            invoke_hosted_agent,
             *all_activities(),
         ],
         # No plugins= here on purpose: the worker inherits StrandsPlugin from the

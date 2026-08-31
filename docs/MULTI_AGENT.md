@@ -8,6 +8,10 @@ repo follows, and why.
 > inside a single Activity. Collaboration *between jobs* is a Temporal concern
 > and runs as separate workflow executions. Never blur the two: the first is
 > one durable unit of work, the second is many.
+>
+> A third case sits outside both: an agent this control plane does not run at
+> all, reached over a service boundary. That is the **hosted lane** (tier 3),
+> and its durability is per-invocation — see the last section.
 
 ---
 
@@ -91,3 +95,69 @@ This is the side of the line to prefer whenever the collaborating parties are
 independently operated, independently scaled, or independently failed — the
 properties a workflow boundary gives you for free are exactly the ones a
 single Activity gives up (see the table above).
+
+---
+
+## The hosted lane — someone else's agent entirely
+
+**Built. `app/activities/hosted.py`, tier 3, exposed as the VendorCheck
+reference agent (E7.3).**
+
+There is a third case the rule above doesn't cover: an agent this control
+plane does not run *at all*. A tier-3 agent lives on AgentCore Runtime, in its
+own container, with its own loop, its own model, its own tools and its own
+data. `AgentJobWorkflow` reaches it with a single `InvokeAgentRuntime` call
+and receives one answer.
+
+That makes it structurally the same shape as the Swarm case — one Activity,
+one coarse retry unit — but for a different reason. The Swarm *could* have
+been decomposed and wasn't; a hosted agent *cannot* be, because the turns
+happen on the other side of a service boundary we don't control.
+
+### Durability is per-invocation, not per-turn
+
+This is the sentence worth remembering about the hosted lane:
+
+> Temporal gives you durability **around** a hosted agent, not **inside** it.
+
+Concretely, for a tier-3 agent:
+
+| | Native (tiers 1–2) | Hosted (tier 3) |
+|---|---|---|
+| Retry unit | one model call / one tool call | the whole invocation |
+| Worker dies mid-way | resumes at that call | re-invokes from the start |
+| Its internal tool calls | our activities, in Event History | invisible to us |
+| `ApprovalGate` | enforced | **not available** |
+| `GuardrailGate` | enforced | **not available** |
+| Session terminal | live tokens, every tool call | one call, then the answer |
+| Token streaming | yes | no |
+
+The approval and guardrail rows are the ones with teeth. A hosted agent can
+call whatever tools it likes, including consequential ones, and this control
+plane will never see them — so it cannot pause them for a human or screen
+them. That is not a gap to be closed later; it is what "hosted" means.
+
+`dos agent validate` enforces this rather than letting it surprise anyone: a
+tier-3 manifest declaring `tools`, `mcp_servers`, an `approval_policy`, or an
+`output_model` is **rejected**, because every one of those would silently do
+nothing. An author who writes an `approval_policy` on a hosted agent and sees
+it accepted would reasonably believe payments were gated when nothing was
+gating them.
+
+### What you still get
+
+Everything outside the invocation is unchanged, and it is not nothing:
+per-tenant fair queueing and priority, retries with backoff, timeouts, the
+job's place in the process monitor, tenant-scoped memory recall and write-back
+around the call, full Event History of the invocation and its result, and
+resumption of the *job* if the worker dies. The hosted agent is an opaque step
+inside an otherwise fully durable process.
+
+### Installing one takes an ARN, not a repo
+
+Because there is no agent loop to configure on this side, a hosted agent needs
+no package on disk at all — `dos agent register-hosted --runtime-arn ...`
+writes the registry row directly. That is the tier-3 install story: a tenant
+adopts a third-party agent from the store with an ARN someone handed them, no
+repo access and no deploy. `agents/vendorcheck/` exists as a worked example
+of the same thing expressed as a package; both produce the same registry row.
