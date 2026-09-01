@@ -1,0 +1,24 @@
+id: returns-triage
+name: Returns Triage
+version: 1
+
+# Tier 1 — SOP only, no tools and no code. The agent reads the case, applies the
+# tenant's returns policy, and returns a recommendation; a human or a downstream
+# system carries it out. This package is the worked tier-1 example referenced by
+# CONTRIBUTING.md: everything it does comes from the two files in this folder.
+tier: "1"
+
+model: bedrock-claude
+
+tools: []
+
+mcp_servers: []
+
+parameters:
+  # Returns past this many days from delivery are out of policy. The SOP refuses
+  # them on that ground alone rather than weighing condition or reason.
+  return_window_days: "30"
+  # At or below this order value a clean, in-window return is routine enough to
+  # recommend refunding outright; above it the SOP asks for human review, which
+  # is how a tier-1 agent escalates when it has no tools to gate.
+  auto_approve_limit_usd: "75"

@@ -160,6 +160,7 @@ agents/                  # agent packages — the extensibility surface
   incident_triage/       #   tier 1 · SOP only, no tools (the flood generator)
   dispute_resolution/    #   tier 2 · read-only + consequential tools, sandbox
   vendorcheck/           #   tier 3 · hosted on AgentCore Runtime, manifest only
+  returns_triage/        #   tier 1 · the worked example — two files, no code
 app/
   workflows/             # AgentJobWorkflow — the ONLY workflow type
   activities/            # model, tools, guardrail, sandbox, memory, payment, hosted
@@ -254,7 +255,9 @@ make agent-publish ID=returns-triage    # writes a registry row — no redeploy,
 make agent-test ID=returns-triage PROMPT="..."
 ```
 
-A tier-1 author who has never heard of Temporal still inherits fair scheduling, crash recovery mid-turn without duplicated side effects, and safe upgrades while their sessions are in flight. Full guide: [CONTRIBUTING.md](CONTRIBUTING.md).
+A tier-1 author who has never heard of Temporal still inherits fair scheduling, crash recovery mid-turn without duplicated side effects, and safe upgrades while their sessions are in flight.
+
+**Worked example:** [`agents/returns_triage/`](agents/returns_triage/) is a complete tier-1 agent — a manifest and an SOP, no Python at all — authored entirely through the loop above and verified by `make verify-returns-triage`. Full guide: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
@@ -267,6 +270,7 @@ make ci                       # ruff + mypy
 make replay                   # non-determinism guard: replays real recorded histories
 make verify                   # DynamoDB registry round-trip
 make verify-agents            # all native reference agents, real jobs
+make verify-returns-triage    # the worked tier-1 example, one job per SOP rule
 make verify-payment           # proof 3's idempotency mechanism
 make verify-kill-resume       # proof 3 end to end: crash mid-tool, restart, count == 1
 make verify-pinning           # proof 2: in-flight session survives a deploy
@@ -311,7 +315,7 @@ Tracked in [docs/BACKLOG.md](docs/BACKLOG.md); listed here so nothing is discove
 - **Demo hardening (E8.1).** `docs/DEMO_SCRIPT.md` is a placeholder; no reset script; no full-run recording; Mockoon collection coverage not audited.
 - **Rehearsals.** The 200-job fairness dress rehearsal, the 10× kill/restart rehearsal, and a 10-metre projector legibility pass are all still outstanding (each verified at reduced scale).
 - **Guardrail demonstrability.** The `OffPolicyPayment` denied topic is close to unreachable through a model turn — its definition overlaps the model's own refusal boundary, so the model declines before the gate is consulted. Reachable categories (e.g. the PII and profanity policies) are what the verification uses. See [docs/DECISIONS.md](docs/DECISIONS.md).
-- **Open-source release (E10).** Worked tier-1 Returns Triage example and Temporal Code Exchange publication are not done.
+- **Open-source release (E10).** Temporal Code Exchange publication is not done.
 - **No per-tenant tool-authorization boundary.** Isolation is installs, priority/fairness, and memory namespacing; the manifest — validated against the tool catalog at publish time — is the control point on what an agent may call. Fine when you author the packages; not sufficient for genuinely untrusted tenant packages.
 
 ---

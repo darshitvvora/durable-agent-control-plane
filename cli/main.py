@@ -68,11 +68,25 @@ def agent_init(agent_id: str) -> None:
         _fail(f"template not found at {template}")
 
     shutil.copytree(template, destination)
+    display_name = agent_id.replace("-", " ").title()
     manifest_path = destination / MANIFEST_NAME
     manifest_path.write_text(
         manifest_path.read_text()
         .replace("id: my-agent", f"id: {agent_id}")
-        .replace("name: My Agent", f"name: {agent_id.replace('-', ' ').title()}")
+        .replace("name: My Agent", f"name: {display_name}")
+    )
+
+    # The template's README describes the *template*. Copying it verbatim left
+    # every scaffolded package announcing itself as "Agent package template",
+    # which is the first file a reviewer opens.
+    (destination / "README.md").write_text(
+        f"# {display_name}\n\n"
+        f"Agent package for `{agent_id}`. The two files beside this one are the "
+        f"whole agent — there is no code to deploy.\n\n"
+        f"- `manifest.yaml` — tier, model, tools, parameters, approval policy\n"
+        f"- `procedure.sop.md` — the system prompt, substituted per job\n\n"
+        f"Say here what this agent decides and what it must never do.\n\n"
+        f"Authoring guide: [CONTRIBUTING.md](../../CONTRIBUTING.md)\n"
     )
 
     typer.secho(f"created {destination}", fg=typer.colors.GREEN)

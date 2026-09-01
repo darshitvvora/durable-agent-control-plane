@@ -23,6 +23,10 @@ make agent-publish ID=returns-triage   # writes the registry row — no redeploy
 make agent-test ID=returns-triage PROMPT="..."   # runs one real job
 ```
 
+A complete worked example of exactly this loop lives in
+[`agents/returns_triage/`](agents/returns_triage/) — two files, no code, verified
+end to end by `make verify-returns-triage`.
+
 `agent-publish` only writes a DynamoDB row. The generic `AgentJobWorkflow` and
 the tool activities already exist, so there is nothing to deploy and no worker to
 restart. `agents/` is an authoring-time surface; at runtime the workflow reads the
