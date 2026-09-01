@@ -315,8 +315,10 @@ CLI: `dos demo kill-worker --at-tool-boundary`, `dos demo payment-count`. UI: Sy
 ### Story E10.1 — Make it forkable
 **Acceptance:** a stranger adds an agent by following the README alone.
 
-- [ ] T1 README: thesis, architecture, quickstart
-- [ ] T2 `CONTRIBUTING.md` — copy the template, edit the manifest, write the SOP
-- [ ] T3 Worked tier-1 example (Returns Triage) end to end
-- [ ] T4 Label every preview feature with its status
-- [ ] T5 Publish to Temporal Code Exchange
+- [x] T1 README: thesis, three proofs, Mermaid architecture + one-job sequence diagram, the stack (Temporal features / Strands / Bedrock / AgentCore each called out), repo layout, quickstart, agent-authoring tiers, every `make verify-*` entry point, epic status, and an explicit **known gaps** section. Both diagrams were rendered and checked, not just written; every `make` target and doc link in it was verified to exist.
+- [x] T2 `CONTRIBUTING.md` — already written (with `agents/_template/`, E2.1 T4) and covers exactly this task: the three tiers, the tier-1 no-code loop, every manifest field, SOP placeholder rules, how to add a tier-2 tool idempotently, and a pre-PR checklist. Ticked 2026-09-01 after audit; README now links to it as the agent-authoring entry point.
+- [x] T4 Label every preview feature with its status — one table in the README (Priority & Fairness, Worker Deployment Versioning, Serverless Workers, Workflow Streams, External Storage, `contrib.strands`), matching the labels already carried in code comments (`app/worker.py`, `app/config.py`, `app/temporal_client.py`, `app/workflows/agent_job.py`, `app/api/routes/events.py`) and CLAUDE.md §2. Nothing claims GA that is not GA.
+- [ ] T3 Worked tier-1 example (Returns Triage) end to end — **to be completed**. `CONTRIBUTING.md` already uses `returns-triage` as its worked example in prose; what is missing is the actual package under `agents/` plus a real verified run.
+- [ ] T5 Publish to Temporal Code Exchange — **to be completed**; blocked on E9 (nobody can deploy a fork yet) and on E8's demo script.
+
+**Note:** the README's "Known gaps — to be completed" section is the public-facing mirror of this backlog. If a gap is closed here, close it there too, or the README starts lying to people who fork the repo.
