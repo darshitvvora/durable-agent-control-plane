@@ -7,6 +7,7 @@ type Entry =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string }
   | { kind: "tool"; tool: string }
+  | { kind: "guardrail"; tool: string; blocked: boolean; reason: string | null }
   | { kind: "note"; text: string };
 
 /** Live tty for one session: tokens as they stream, tool calls as they fire. */
@@ -47,31 +48,76 @@ export function SessionTerminal({ job }: { job: Job | null }) {
     const onFlat = (name: string, handler: (data: Record<string, string>) => void) =>
       source.addEventListener(name, (e) => handler(JSON.parse((e as MessageEvent).data)));
 
-    const onWorkflow = (name: string, handler: (payload: Record<string, string>) => void) =>
+    const onWorkflow = (name: string, handler: (payload: Record<string, unknown>) => void) =>
       source.addEventListener(name, (e) =>
         handler(JSON.parse((e as MessageEvent).data).payload ?? {}),
       );
 
     source.onopen = () => !cancelled && setLive(true);
-    source.onerror = () => !cancelled && setLive(false);
+
+    // EventSource retries on its own whenever the server closes the response.
+    // That is what you want while a session is still running, and exactly what
+    // you must not do once it is over: a finished workflow's stream is gone, so
+    // every retry reconnects, gets an immediate close, and retries again —
+    // forever, holding a connection slot per cycle until the page starves and
+    // *later* sessions stop streaming too. Closing on `job_finished` alone does
+    // not cover it, because the pane can attach to a job that already finished
+    // (a fast session can complete inside the 2s job-poll interval, and an
+    // operator can select any past session): in that case no `job_finished`
+    // ever arrives and there is nothing to close on. So settle it against real
+    // execution status instead — the polled-state endpoint E4.2 T3 already
+    // added for the no-stream case.
+    source.onerror = () => {
+      if (cancelled) return;
+      setLive(false);
+      void api
+        .jobState(job.job_id)
+        .then((s) => {
+          if (cancelled) return;
+          setState(s);
+          if (s.status !== "RUNNING") source.close();
+        })
+        .catch(() => {
+          /* transient: leave the retry alone, the strip surfaces API failure */
+        });
+    };
 
     onFlat("token", (d) => append({ kind: "text", text: d.text }));
     onFlat("reasoning", (d) => append({ kind: "reasoning", text: d.text }));
     onFlat("tool_call", (d) => append({ kind: "tool", tool: d.tool }));
     onWorkflow("job_started", (p) =>
-      append({ kind: "note", text: `session started — ${p.agent_id ?? ""}` }),
+      append({ kind: "note", text: `session started — ${String(p.agent_id ?? "")}` }),
+    );
+    // Bedrock Guardrails verdict on a proposed consequential tool call (E7.1 T3),
+    // published by the workflow onto the same job_events topic.
+    onWorkflow("guardrail", (p) =>
+      append({
+        kind: "guardrail",
+        tool: String(p.tool ?? "tool"),
+        blocked: Boolean(p.blocked),
+        reason: p.reason == null ? null : String(p.reason),
+      }),
     );
     onWorkflow("approval_pending", (p) => {
-      append({ kind: "note", text: `awaiting approval — ${p.tool ?? "tool"}` });
+      append({ kind: "note", text: `awaiting approval — ${String(p.tool ?? "tool")}` });
       void api.jobState(job.job_id).then((s) => !cancelled && setState(s));
     });
     onWorkflow("approval_resumed", (p) => {
-      append({ kind: "note", text: `reviewer said: ${p.decision}` });
+      append({ kind: "note", text: `reviewer said: ${String(p.decision)}` });
       setState((prev) => (prev ? { ...prev, pending_approval: null } : prev));
     });
     onWorkflow("job_finished", (p) => {
-      append({ kind: "note", text: `session finished — ${p.stop_reason ?? ""}` });
+      append({ kind: "note", text: `session finished — ${String(p.stop_reason ?? "")}` });
       setLive(false);
+      // Close, do not just stop reading. A finished workflow's stream is gone,
+      // but EventSource reconnects on its own whenever the server closes the
+      // response — so leaving it open starts an endless reconnect loop that
+      // holds a browser connection slot per cycle. A few finished sessions and
+      // the per-origin limit is reached, at which point the *next* session's
+      // stream silently never connects: the pane shows the new job id, polls
+      // its state, and sits at "waiting for output" forever. Which is exactly
+      // what a presenter running several sessions in a row would hit.
+      source.close();
       // Claim-check numbers (E7.2 T4) only settle once the run has closed.
       void api.jobState(job.job_id).then((s) => !cancelled && setState(s));
     });
@@ -133,6 +179,20 @@ export function SessionTerminal({ job }: { job: Job | null }) {
               return (
                 <div key={i} className="my-1 text-signal">
                   → {entry.tool}
+                </div>
+              );
+            // A block is the one thing here that stops real work, so it reads
+            // as an alert bar; a pass stays quiet, so the pane does not cry
+            // wolf when the guardrail simply agreed (CLAUDE.md §7).
+            if (entry.kind === "guardrail")
+              return entry.blocked ? (
+                <div key={i} className="my-1 bg-alert px-2 py-[2px] text-ink">
+                  ✕ guardrail blocked {entry.tool}
+                  {entry.reason ? ` — ${entry.reason}` : ""}
+                </div>
+              ) : (
+                <div key={i} className="my-1 text-ink-dim">
+                  ✓ guardrail passed — {entry.tool}
                 </div>
               );
             if (entry.kind === "note")

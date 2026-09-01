@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(kill -9 87715 87713)"
+      "Bash(kill -9 87715 87713)",
+      "Bash(AWS_PROFILE=\"SolutionsArchitecture/AWSAdministratorAccess\" npx playwright test -g \"four consecutive sessions\")"
     ]
   }
 }

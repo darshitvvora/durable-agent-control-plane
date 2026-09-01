@@ -26,6 +26,11 @@ from app.config import get_settings
 class GuardrailVerdict(BaseModel):
     blocked: bool
     reason: str | None = None
+    # False only when no Guardrail is configured and this returned without
+    # calling Bedrock at all. The session terminal keys off this so a fork
+    # without a Guardrail shows nothing rather than a "passed" verdict for a
+    # check that never ran (CLAUDE.md §7, no fake data).
+    evaluated: bool = True
 
 
 @lru_cache
@@ -45,7 +50,7 @@ async def apply_guardrail(text: str) -> GuardrailVerdict:
     payment guardrail."""
     settings = get_settings()
     if not settings.bedrock_guardrail_id or not settings.bedrock_guardrail_version:
-        return GuardrailVerdict(blocked=False)
+        return GuardrailVerdict(blocked=False, evaluated=False)
 
     response = _client().apply_guardrail(
         guardrailIdentifier=settings.bedrock_guardrail_id,

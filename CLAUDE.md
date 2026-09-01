@@ -169,7 +169,6 @@ This stack is deliberately generic — one workflow type, manifest-driven agents
 | Models | Amazon Bedrock — Claude, Nova |
 | Tools | AgentCore Gateway (MCP) via `TemporalMCPClient` |
 | Memory | AgentCore Memory, tenant-scoped |
-| Identity | AgentCore Identity — per-tenant tool authorization; denial visible in the session pane |
 | Guardrails | Bedrock Guardrails |
 | Hosted agents | AgentCore Runtime (third-party lane) |
 | Sandboxes | AgentCore Code Interpreter, invoked from a Temporal Activity |

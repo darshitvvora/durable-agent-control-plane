@@ -9,6 +9,7 @@ rather than needing a synchronous interrupt/resume round trip like approval.
 """
 
 import json
+from collections.abc import Callable
 from datetime import timedelta
 
 from strands.hooks import HookProvider, HookRegistry
@@ -16,14 +17,26 @@ from strands.hooks.events import BeforeToolCallEvent
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-from app.activities.guardrail import apply_guardrail
+from app.activities.guardrail import GuardrailVerdict, apply_guardrail
 
 GUARDRAIL_START_TO_CLOSE = timedelta(seconds=10)
 
 
 class GuardrailGate(HookProvider):
-    def __init__(self, guarded_tools: frozenset[str]) -> None:
+    """`on_verdict` hands each real verdict back to the workflow, which publishes
+    it on its Workflow Stream for the session terminal (E5.1 T4). The activity
+    result surfaces here in *workflow* context, so the workflow can publish it
+    directly — unlike token deltas, which never leave the activity and so need
+    `WorkflowStreamClient.from_within_activity()` instead.
+    """
+
+    def __init__(
+        self,
+        guarded_tools: frozenset[str],
+        on_verdict: Callable[[str, GuardrailVerdict], None] | None = None,
+    ) -> None:
         self._guarded_tools = guarded_tools
+        self._on_verdict = on_verdict
 
     def register_hooks(self, registry: HookRegistry, **kwargs: object) -> None:
         registry.add_callback(BeforeToolCallEvent, self._gate)
@@ -40,6 +53,9 @@ class GuardrailGate(HookProvider):
             start_to_close_timeout=GUARDRAIL_START_TO_CLOSE,
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
+
+        if self._on_verdict is not None and verdict.evaluated:
+            self._on_verdict(tool_name, verdict)
 
         if verdict.blocked:
             # Cancelling hands the model a tool result explaining the block,

@@ -23,6 +23,7 @@ with workflow.unsafe.imports_passed_through():
     from temporalio.contrib.strands import workflow as strands_workflow
 
     from app.activities.catalog import GUARDED_TOOLS, TOOL_CATALOG
+    from app.activities.guardrail import GuardrailVerdict
     from app.activities.hosted import invoke_hosted_agent
     from app.activities.memory import recall_tenant_memory, record_tenant_memory
     from app.activities.registry import mark_job_started, resolve_agent_package
@@ -258,13 +259,33 @@ class AgentJobWorkflow:
             history = "\n".join(f"- {note}" for note in recalled)
             system_prompt += f"\n\n## Recent history for this tenant\n{history}"
 
+        # The guardrail verdict is decided inside GuardrailGate but published
+        # from here, onto the same job_events topic as every other UIEvent —
+        # the gate awaits its activity in workflow context, so there is nothing
+        # to bridge from the activity side (E5.1 T4).
+        def publish_guardrail(tool: str, verdict: GuardrailVerdict) -> None:
+            self.events.publish(
+                UIEvent(
+                    job_id=job.job_id,
+                    kind="guardrail",
+                    payload={
+                        "tool": tool,
+                        "blocked": verdict.blocked,
+                        "reason": verdict.reason,
+                    },
+                )
+            )
+
         # Constructed from the manifest — deterministic, no I/O. The model, tool,
         # and MCP calls it makes are dispatched as Temporal activities by StrandsPlugin.
         agent = TemporalAgent(
             model=package.model,
             system_prompt=system_prompt,
             tools=tools,
-            hooks=[ApprovalGate(package.approval_policy), GuardrailGate(GUARDED_TOOLS)],
+            hooks=[
+                ApprovalGate(package.approval_policy),
+                GuardrailGate(GUARDED_TOOLS, on_verdict=publish_guardrail),
+            ],
             structured_output_model=output_model,
             start_to_close_timeout=MODEL_START_TO_CLOSE,
             retry_policy=RetryPolicy(maximum_attempts=3),

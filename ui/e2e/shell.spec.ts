@@ -78,3 +78,46 @@ test("flooding a tenant drives its lane and streams a real session", async ({ pa
   // (regression guard: job_events nest their detail under `payload`).
   await expect(session).toContainText("session finished — end_turn", { timeout: 120_000 });
 });
+
+// Every spec above starts from a fresh page, which is exactly why none of them
+// caught the defect this one guards: a presenter runs several sessions in a row
+// without reloading, and the *second* one used to never stream at all — the
+// pane showed the new job id, polled /state fine, and sat at "waiting for
+// output" forever. Cause was the session terminal leaving its EventSource open
+// after a session ended, so the browser reconnect-looped on a dead stream until
+// the page ran out of connections (docs/DECISIONS.md, 2026-09-01).
+// KNOWN FAILING — deliberately `fixme` rather than deleted or left red, so the
+// gap stays visible in every run without turning the suite red. Tracked as
+// E8.1 T0; see docs/DECISIONS.md (2026-09-01). Two real causes were found and
+// fixed from this reproduction (an unclosed EventSource reconnect-looping after
+// `job_finished`, and the same loop when attaching to an already-terminal job),
+// but a third remains: on a later round the stream delivers a real session and
+// then drops before `job_finished`. Remove the `.fixme` once that is fixed.
+test.fixme("four consecutive sessions on one page all stream", async ({ page }) => {
+  await page.goto("/");
+
+  const session = page.getByRole("heading", { name: "Session", exact: true }).locator("xpath=../..");
+  const runOneSession = async (first: boolean) => {
+    // Three per round, not one: a single tier-1 job can finish inside the 2s
+    // job-poll interval, so the pane attaches to an already-finished session
+    // and legitimately has nothing to stream. A small burst keeps the newest
+    // job running long enough to be observed, same as the flood spec above.
+    await page.getByRole("spinbutton", { name: "flood count" }).fill("3");
+    await page.getByRole("button", { name: "Run" }).click();
+    // Waiting for the pane to go *empty* first is what makes the second pass
+    // meaningful: the previous session's transcript is still on screen, so
+    // asserting "session started" straight away would pass on stale text. The
+    // pane clears only when it switches to the new job.
+    if (!first) await expect(session).not.toContainText("session finished", { timeout: 90_000 });
+    await expect(session).toContainText("session started", { timeout: 90_000 });
+    await expect(session).toContainText("session finished", { timeout: 120_000 });
+  };
+
+  await page.getByRole("combobox").selectOption("initech");
+
+  // Four, not two. Each finished-but-unclosed stream costs one browser
+  // connection slot, so two sessions never exhausted the pool and the spec
+  // passed even with the fix reverted — a guard that cannot fail. Four
+  // reproduces the original failure reliably.
+  for (let i = 0; i < 4; i++) await runOneSession(i === 0);
+});

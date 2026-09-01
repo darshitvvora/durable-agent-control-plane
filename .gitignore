@@ -196,6 +196,7 @@ ui/*.tsbuildinfo
 ui/.vite/
 
 # Playwright Test (E5's `make e2e`) output — regenerated on every run.
+test-results/
 ui/test-results/
 ui/playwright-report/
 ui/blob-report/

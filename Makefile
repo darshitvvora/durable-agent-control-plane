@@ -1,5 +1,6 @@
 .PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
 	verify-tenant-priority verify-streaming verify-agents verify-versioning verify-pinning verify-kill-resume \
+	verify-guardrail \
 	verify-sandbox-isolation verify-external-storage verify-hosted \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
@@ -47,6 +48,10 @@ verify-tool-call:
 # needs `make worker` and Mockoon running
 verify-interrupt:
 	uv run python -m scripts.verify_interrupt
+
+# needs `make worker`, `make api`, and Mockoon running
+verify-guardrail:
+	uv run python -m scripts.verify_guardrail
 
 # needs `make worker` running
 verify-tenant-priority:
