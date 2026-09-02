@@ -25,22 +25,40 @@ from temporalio.converter import ExternalStorage
 from app.config import get_settings
 
 
+def bedrock_session() -> boto3.Session:
+    """The boto3 session every Bedrock client here shares.
+
+    Passing `AWS_PROFILE` explicitly rather than letting boto3 resolve the
+    ambient default is load-bearing, not tidiness: a `[default]` profile
+    configured for `aws login` resolves through a credential provider that
+    needs `botocore[crt]`, so an unprofiled session raises
+    MissingDependencyException even when the configured profile is perfectly
+    valid. Same shape as every other AWS client in this app. On Lambda there is
+    no profile and the execution role resolves normally.
+    """
+    settings = get_settings()
+    return (
+        boto3.Session(profile_name=settings.aws_profile, region_name=settings.aws_region)
+        if settings.aws_profile
+        else boto3.Session(region_name=settings.aws_region)
+    )
+
+
 def model_registry() -> dict[str, Callable[[], Model]]:
     """Manifest `model:` names → Bedrock model factories.
 
     Factories are lazy: called on first use on the worker, outside the sandbox,
-    then cached for the worker's lifetime. Credentials come from the ambient IAM
-    role (SSO locally, execution role on Lambda) — boto3 resolves them itself.
+    then cached for the worker's lifetime.
     """
     settings = get_settings()
     return {
         "bedrock-claude": lambda: BedrockModel(
             model_id=settings.bedrock_claude_model_id,
-            region_name=settings.aws_region,
+            boto_session=bedrock_session(),
         ),
         "bedrock-nova": lambda: BedrockModel(
             model_id=settings.bedrock_nova_model_id,
-            region_name=settings.aws_region,
+            boto_session=bedrock_session(),
         ),
     }
 

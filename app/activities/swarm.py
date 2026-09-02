@@ -24,6 +24,7 @@ from strands.multiagent.swarm import Swarm
 from temporalio import activity
 
 from app.config import get_settings
+from app.temporal_client import bedrock_session
 
 REVIEWER_PROMPT = """You are an accounts-payable fraud reviewer. You are handed
 one flagged invoice: a vendor whose payment-risk tier is not "low", combined
@@ -57,8 +58,15 @@ class FraudSwarmVerdict(BaseModel):
 
 @lru_cache
 def _model() -> BedrockModel:
+    # Shares `bedrock_session()` with the main model registry — an unprofiled
+    # session resolves through the `[default]` profile, which fails outright
+    # when that profile is configured for `aws login`. Note BedrockModel
+    # rejects `region_name` and `boto_session` together; the session carries it.
     settings = get_settings()
-    return BedrockModel(model_id=settings.bedrock_claude_model_id, region_name=settings.aws_region)
+    return BedrockModel(
+        model_id=settings.bedrock_claude_model_id,
+        boto_session=bedrock_session(),
+    )
 
 
 @activity.defn

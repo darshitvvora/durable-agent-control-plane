@@ -37,7 +37,12 @@ with workflow.unsafe.imports_passed_through():
 MODEL_START_TO_CLOSE = timedelta(seconds=120)
 REGISTRY_START_TO_CLOSE = timedelta(seconds=10)
 JOB_STARTED_START_TO_CLOSE = timedelta(seconds=10)
-MEMORY_START_TO_CLOSE = timedelta(seconds=10)
+# 30s, not 10s: every job for a tenant recalls from that tenant's single
+# AgentCore Memory stream (actorId == sessionId == tenant id), so a flood makes
+# N concurrent list_events calls contend on one stream. At 10s, a 12-job flood
+# exhausted this activity's retries and killed the flooded tenant's jobs —
+# proof 1's own load pattern breaking proof 1 (docs/DECISIONS.md, 2026-09-02).
+MEMORY_START_TO_CLOSE = timedelta(seconds=30)
 # A hosted agent runs its whole loop inside this one call (E7.3), so it needs
 # far more headroom than a single model call — and only 2 attempts, since a
 # retry re-runs that entire loop from scratch.
@@ -119,12 +124,24 @@ class AgentJobWorkflow:
         # Tenant-scoped recall (E7.1 T2) — every agent, not manifest-gated,
         # same cross-cutting shape as mark_job_started above. Empty (not an
         # error) if Memory isn't configured or this tenant has no history yet.
-        recalled = await workflow.execute_activity(
-            recall_tenant_memory,
-            args=[job.tenant_id],
-            start_to_close_timeout=MEMORY_START_TO_CLOSE,
-            retry_policy=RetryPolicy(maximum_attempts=2),
-        )
+        #
+        # Best-effort in the same sense as the record_tenant_memory write
+        # below: recall enriches a prompt, so losing it degrades an answer but
+        # must never fail the job. The activity returning empty was already
+        # handled; a *timeout* was not, and under a flood that is precisely
+        # what happens — see MEMORY_START_TO_CLOSE above.
+        try:
+            recalled = await workflow.execute_activity(
+                recall_tenant_memory,
+                args=[job.tenant_id],
+                start_to_close_timeout=MEMORY_START_TO_CLOSE,
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+        except ActivityError:
+            workflow.logger.warning(
+                "recall_tenant_memory failed for %s, continuing without history", job.job_id
+            )
+            recalled = []
         if recalled:
             self.events.publish(
                 UIEvent(job_id=job.job_id, kind="memory_recall", payload={"notes": recalled})

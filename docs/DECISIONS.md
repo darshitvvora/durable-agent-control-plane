@@ -671,3 +671,76 @@ The `Policy` row stays `Declined for now` on its own merits — the human-in-the
 One parsing detail that would otherwise have made the test lie: the decision is read from the SOP's required `Decision:` line, not by scanning the whole answer, because a good rationale legitimately names the options it ruled out ("...rather than refund") and a substring search over the full text matches the wrong word.
 
 **Verified:** two consecutive clean runs, 12 real jobs, all six rules correct both times. `returns-triage` appears in the running Agent Store as `v1 · NATIVE · tier 1 · No-code · installed` with nothing under `ui/` touched — the zero-UI-code claim, confirmed live rather than asserted.
+
+## 2026-09-02 — `BedrockModel` built its own credentials, and an `aws login` profile broke every native job
+
+Found during a manual demo run, not by a test. Every native agent job failed at its first model call with `MissingDependencyException: Using the login credential provider requires an additional dependency ... pip install "botocore[crt]"`. Nothing in this repo had changed; the *environment* had.
+
+**Root cause.** Six AWS clients in `app/` (`repository`, `memory`, `guardrail`, `sandbox`, `hosted`, the S3 storage driver) build their session as `boto3.Session(profile_name=settings.aws_profile, ...)` when a profile is configured. `model_registry()` did not — it passed only `region_name` to `BedrockModel`, so Strands constructed its own default session. Its docstring stated the assumption out loud: *"Credentials come from the ambient IAM role (SSO locally, execution role on Lambda) — boto3 resolves them itself."* That held until the developer's `[default]` profile acquired a `login_session` entry (written by `aws login`), which routes default resolution through a credential provider that requires `botocore[crt]`. The configured SSO profile was valid the whole time; nothing was ever asking for it.
+
+Reproduced exactly before changing anything: `boto3.Session(profile_name=...)` → `sso`; `boto3.Session()` → the identical exception.
+
+**Fix: pass the session, at both sites.** `bedrock_session()` in `app/temporal_client.py`, shared by `model_registry()` and `app/activities/swarm.py`'s `_model()` — which had the same gap and would have failed the fraud-specialist Swarm the same way. Note `BedrockModel` raises `ValueError` if given both `region_name` and `boto_session` (confirmed by reading the installed source), so dropping `region_name` was required, not tidying; the session carries the region.
+
+**Rejected: `uv add "botocore[crt]"`.** It would have made the run succeed while leaving Bedrock on `[default]` and everything else on `AWS_PROFILE` — so pointing the app at a second AWS account would silently split traffic across two. That hides the bug instead of removing it.
+
+**No `BUILD_ID` bump.** Worker-side client wiring, not workflow code: no change to the command sequence in history. `make replay` clean against 20 v17 histories afterwards, which is what confirmed the call rather than assumed it.
+
+**Carried forward:** that session-construction block now appears in eight places and wants a shared helper. Deliberately not bundled into this fix.
+
+## 2026-09-02 — E7.1 T2 silently regressed proof 1, and only a flood would ever have shown it
+
+**Proof 1 was last verified 2026-08-21. Memory recall was added to every job on 2026-08-28 (E7.1 T2). E3.2 T4 — the full-scale flood rehearsal — was deferred for cost and never run. So the regression sat undetected for five days, in the one proof no cheap test covers.**
+
+A 12-job flood on initech killed **ten** of the twelve. All died the same way: `recall_tenant_memory`, `activity StartToClose timeout`, `retry_state=MaximumAttemptsReached`.
+
+**Root cause is the interaction, not either part.** Recall is tenant-scoped with `actorId == sessionId == tenant_id` (E7.1 T2), so *every* job for a tenant reads the same AgentCore Memory stream. A flood is by definition N concurrent jobs for one tenant, so it is N concurrent `list_events` calls contending on a single stream. At a 10s `start_to_close` and 2 attempts, that exhausts. Proof 1's own load pattern was breaking proof 1.
+
+Worse, the failure was fatal. Two lines above it, `mark_job_started` is wrapped in `try/except ActivityError` and continues. Twenty lines below, the `record_tenant_memory` write is wrapped too, with a comment stating the principle: *"a memory write failing is never a reason to fail a job it is only summarizing."* The recall in between was never given the same treatment. Its comment claimed *"Empty (not an error) if Memory isn't configured or this tenant has no history yet"* — true of the activity returning empty, not of it timing out.
+
+**Fix (both halves, deliberately):**
+- Wrapped the recall in `try/except ActivityError`, falling back to `recalled = []`. Recall enriches a prompt; losing it degrades an answer and must never fail a job. This is the root-cause fix.
+- `MEMORY_START_TO_CLOSE` 10s → 30s, attempts 2 → 3. Without this the job survives but a flooded tenant silently loses its memory context on every job, which is a quieter kind of wrong.
+
+**Rejected: skipping recall for tier-1 agents.** That is agent-specific behaviour in `AgentJobWorkflow`, against CLAUDE.md §11.
+
+`BUILD_ID` v17 → v18, worker restarted, `set_current_version` to v18 (skipping that is the §4 trap — workflows sit at `WorkflowTaskScheduled` with no error). **Verified at 5× the breaking load:** 62 concurrent initech jobs on v18, all completed, failure count unchanged at its pre-existing 11. `make replay` clean against 20 v18 histories.
+
+**Method note worth keeping:** the first watch script exited on its own first poll, reporting `running=0` before any job had been dispatched, and read as "drained". A drain check must observe the queue non-empty before it is allowed to conclude it is empty.
+
+## 2026-09-02 — `scripts/reset.py` (E8.1 T4, partial) and why p95 needs it
+
+`tenant_wait_p95` windows by *sample count* — the tenant's most recent 200 jobs — not by time. So the metric is sticky: a fairness-OFF round's long waits stay in the window and flatten the contrast on the next fairness-ON round, which is exactly the comparison proof 1 turns on. Measuring the two rounds without clearing job rows in between compares one round against a blend of both.
+
+Scope is deliberately narrow — `Job` rows and their result rows only. Tenants, agent packages, installs and idempotency records are fixtures, not run state; wiping them would mean re-seeding the registry before every rehearsal. Tenants come from the registry, never a hardcoded list (CLAUDE.md §11). Dry run by default, `--yes` to delete, and it re-counts afterwards rather than trusting its own delete loop.
+
+Still outstanding for a complete E8.1 T4: clearing the Mockoon payment/dispute buckets, restoring fairness to ON, disarming the kill switch, and clearing any active version ramp.
+
+## 2026-09-02 — Two gaps found by running the demo by hand
+
+Neither is a bug in anything that was tested; both are on the stage path and neither had a test that could see them.
+
+**`dos agent test` never writes a `Job` row.** It starts the workflow directly, skipping the `repo.put_job(...)` that `demo.flood` performs. Consequence: a CLI-started session is invisible in the UI's session list (`/api/jobs` reads `Job` rows), contributes nothing to p95, and is missing from the queued count — only the *running* count sees it, because that comes from Temporal's `count_workflows`. This matters because **the UI can only start floods**: there is no "run this agent with this prompt" control in the browser, so the CLI is the only way to run a non-flood agent, and CLI sessions do not appear in the UI at all.
+
+**The worker count stays inflated for minutes after a kill.** `describe_task_queue` reports pollers seen recently, so the Status Strip still read `workers: 2` well after the killed worker's process was gone (confirmed: exactly one process running). Proof 3's most dramatic beat is a worker dying, and the number that should make that legible lags behind it.
+
+Both recorded rather than fixed — they belong to E8 hardening, and were found mid-run.
+
+## 2026-09-02 — Blocking boto3 in async activities starves the worker event loop (found, accepted, not fixed)
+
+The `Activity not found on completion` warnings during a flood are one symptom of a single root cause, and `recall_tenant_memory`'s failures (entry above) were another. Both come from the same place.
+
+Every registry, memory, guardrail, hosted and sandbox activity is declared `async def` but performs **synchronous boto3 I/O**. The worker sets no `max_concurrent_activities`, so it accepts up to the SDK default (100) activity tasks concurrently, and each one blocks the single asyncio event loop while its boto3 call is in flight. Under a 50-job flood they serialise: a DynamoDB `get_item` that takes milliseconds in isolation overruns a 10s `start_to_close`. The `temporal-developer` skill states the rule directly — *"Activities should be synchronous by default. Use async only when certain the code doesn't block the event loop"* — and lists exactly this consequence: *"Worker cannot communicate with Temporal Server."*
+
+The two activities differ only in retry budget, which is why they present differently: `resolve_agent_package` has the default policy (unlimited attempts), so it reaches attempt 6, eventually succeeds, and only emits a late-completion warning; `recall_tenant_memory` was capped at 2 and killed its job.
+
+**This corrupts proof 1's measurement, which matters more than the noise.** `tenant_wait_p95` measures `created_at → started_at`, and `started_at` is stamped by `mark_job_started` — an activity queued behind the same starved loop. So under flood, part of the measured "wait" is self-inflicted event-loop starvation rather than queue position. That is the most likely explanation for the two anomalies in the 12/4/4 paired run: the flooder's own p95 moved between rounds (the rounds were not load-equivalent), and fairness-OFF never collapsed the tenants together the way the 2026-08-21 run did.
+
+**Largely a single-laptop-worker artifact.** E9's target is Serverless Workers on Lambda, where concurrency spreads across invocations rather than one event loop. It bites the laptop-hosted demo specifically — which is the configuration the rehearsal actually runs in.
+
+**Decision: accepted for now, deliberately (user's call), not fixed.** Recorded here so the numbers produced under flood are read with the right caveat, and so nobody later mistakes the warnings for a Temporal problem. Options considered, in the order they should be revisited:
+1. Wrap the flood hot path (`resolve_agent_package`, `mark_job_started`, `recall_tenant_memory`, `record_tenant_memory`) in `asyncio.to_thread(...)` and set an explicit `max_concurrent_activities`.
+2. The canonical fix: convert pure-boto3 activities to sync `def` with `activity_executor=ThreadPoolExecutor(...)`. Mixed httpx+DynamoDB activities still need `to_thread`, so this does not subsume option 1.
+3. Cap `max_concurrent_activities` alone — mitigation only; the blocking remains.
+
+No `BUILD_ID` bump would be needed for any of them: activity implementations change, activity type names and the workflow's command sequence do not.

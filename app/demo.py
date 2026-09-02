@@ -39,10 +39,18 @@ async def submit_flood(
     accepted, while actual processing is rate-limited by worker capacity and
     (with fairness on) round-robin dispatch. Raises ValueError for an unknown
     tenant (same as resolve_priority) or an unpublished agent.
-    """
-    priority = resolve_priority(tenant_id)
 
-    versions = repo.list_agent_package_versions(agent_id)
+    Every DynamoDB call here goes through `asyncio.to_thread`, because boto3 is
+    synchronous and this runs on the API's event loop. Without it a 50-job
+    flood performs 50 blocking writes inline and freezes the whole API for the
+    duration — the fairness toggle and the flood button itself stop responding
+    for minutes, which is a stage-visible failure, not just slowness. See
+    docs/DECISIONS.md (2026-09-02); the worker has the same class of problem in
+    its activities, tracked separately as E8.1 T5.
+    """
+    priority = await asyncio.to_thread(resolve_priority, tenant_id)
+
+    versions = await asyncio.to_thread(repo.list_agent_package_versions, agent_id)
     if not versions:
         raise ValueError(
             f"agent {agent_id!r} is not published — run `dos agent publish {agent_id}` first"
@@ -54,7 +62,8 @@ async def submit_flood(
 
     async def submit_one() -> None:
         job_id = f"flood-{tenant_id}-{uuid.uuid4().hex[:8]}"
-        repo.put_job(
+        await asyncio.to_thread(
+            repo.put_job,
             Job(
                 job_id=job_id,
                 tenant_id=tenant_id,
@@ -63,7 +72,7 @@ async def submit_flood(
                 status=JobStatus.QUEUED,
                 priority_key=priority.priority_key,
                 created_at=datetime.now(UTC).isoformat(),
-            )
+            ),
         )
         await client.start_workflow(
             AgentJobWorkflow.run,
