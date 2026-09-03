@@ -1,6 +1,6 @@
 .PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
 	verify-tenant-priority verify-streaming verify-agents verify-versioning verify-pinning verify-kill-resume \
-	verify-guardrail verify-returns-triage \
+	verify-guardrail verify-returns-triage verify-run-session \
 	verify-sandbox-isolation verify-external-storage verify-hosted \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
@@ -64,6 +64,10 @@ verify-streaming:
 # needs `make worker` running — the worked tier-1 example (E10.1 T3)
 verify-returns-triage:
 	uv run python -m scripts.verify_returns_triage
+
+# needs `make worker` and `make api` running
+verify-run-session:
+	uv run python -m scripts.verify_run_session
 
 # needs `make worker` and Mockoon running
 verify-agents:
