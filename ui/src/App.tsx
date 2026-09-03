@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { AgentStore } from "./components/AgentStore";
 import { ProcessMonitor } from "./components/ProcessMonitor";
+import { RunSession } from "./components/RunSession";
 import { SessionTerminal } from "./components/SessionTerminal";
 import { StatusStrip } from "./components/StatusStrip";
 import { SystemControls } from "./components/SystemControls";
@@ -19,6 +20,10 @@ export default function App() {
   const [status, setStatus] = useState<FleetStatus | null>(null);
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  // Set by RunSession when a session is launched from the browser. Not wired
+  // into the job-selection effect below yet — that is Task 4's job, which
+  // makes the terminal follow this session instead of the tenant's newest.
+  const [pinnedJobId, setPinnedJobId] = useState<string | null>(null);
   const [busyAgent, setBusyAgent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,7 +109,7 @@ export default function App() {
       )}
 
       <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:grid-cols-[minmax(300px,1fr)_minmax(0,2fr)]">
-        <div className="grid min-h-0 grid-rows-2 gap-2">
+        <div className="grid min-h-0 grid-rows-[1fr_1fr_auto] gap-2">
           <AgentStore
             agents={agents}
             tenant={tenant}
@@ -119,6 +124,7 @@ export default function App() {
             onTenantChange={setTenantId}
             onChanged={refresh}
           />
+          <RunSession agents={agents} tenantId={tenantId} onStarted={setPinnedJobId} />
         </div>
         <div className="grid min-h-0 grid-rows-2 gap-2">
           <ProcessMonitor lanes={lanes} selected={tenantId} onSelect={setTenantId} />

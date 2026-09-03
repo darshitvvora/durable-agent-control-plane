@@ -61,9 +61,15 @@ test("flooding a tenant drives its lane and streams a real session", async ({ pa
   await page.goto("/");
 
   // Flood initech — the tier-1 flood generator — through the UI's own control.
-  await page.getByRole("combobox").selectOption("initech");
-  await page.getByRole("spinbutton", { name: "flood count" }).fill("3");
-  await page.getByRole("button", { name: "Run" }).click();
+  // Scoped to System Controls: the page now has a second combobox and a
+  // second "Run" button (Run session's agent picker and its submit button),
+  // so an unscoped query is ambiguous.
+  const systemControls = page
+    .getByRole("heading", { name: "System Controls", exact: true })
+    .locator("xpath=../..");
+  await systemControls.getByRole("combobox").selectOption("initech");
+  await systemControls.getByRole("spinbutton", { name: "flood count" }).fill("3");
+  await systemControls.getByRole("button", { name: "Run" }).click();
 
   // The lane's running count must actually move; it comes from Temporal's
   // visibility store, not from anything the UI made up.
@@ -77,6 +83,23 @@ test("flooding a tenant drives its lane and streams a real session", async ({ pa
   // Real tokens arrived, and the terminal event carries the model's stop reason
   // (regression guard: job_events nest their detail under `payload`).
   await expect(session).toContainText("session finished — end_turn", { timeout: 120_000 });
+});
+
+test("a session can be started from the UI and streams", async ({ page }) => {
+  await page.goto("/");
+  // Scoped to the "Run session" panel rather than `getByRole("combobox").last()`:
+  // System Controls' tenant picker is also a combobox on this page, and which
+  // one is last in the DOM is an accident of layout, not a contract worth
+  // asserting on.
+  const runSession = page.getByRole("heading", { name: "Run session", exact: true }).locator("xpath=../..");
+  // selectOption's `label` matcher requires an exact string, not a RegExp —
+  // the rendered option text is `${name} · tier ${tier}`.
+  await runSession.getByRole("combobox").selectOption({ label: "Returns Triage · tier 1" });
+  await runSession
+    .getByPlaceholder("Prompt for this session")
+    .fill("Order A-1004, unopened, 6 days since delivery.");
+  await runSession.getByRole("button", { name: "Run" }).click();
+  await expect(page.getByText(/session started/)).toBeVisible({ timeout: 60_000 });
 });
 
 // Every spec above starts from a fresh page, which is exactly why none of them
@@ -97,13 +120,16 @@ test.fixme("four consecutive sessions on one page all stream", async ({ page }) 
   await page.goto("/");
 
   const session = page.getByRole("heading", { name: "Session", exact: true }).locator("xpath=../..");
+  const systemControls = page
+    .getByRole("heading", { name: "System Controls", exact: true })
+    .locator("xpath=../..");
   const runOneSession = async (first: boolean) => {
     // Three per round, not one: a single tier-1 job can finish inside the 2s
     // job-poll interval, so the pane attaches to an already-finished session
     // and legitimately has nothing to stream. A small burst keeps the newest
     // job running long enough to be observed, same as the flood spec above.
-    await page.getByRole("spinbutton", { name: "flood count" }).fill("3");
-    await page.getByRole("button", { name: "Run" }).click();
+    await systemControls.getByRole("spinbutton", { name: "flood count" }).fill("3");
+    await systemControls.getByRole("button", { name: "Run" }).click();
     // Waiting for the pane to go *empty* first is what makes the second pass
     // meaningful: the previous session's transcript is still on screen, so
     // asserting "session started" straight away would pass on stale text. The
@@ -113,7 +139,7 @@ test.fixme("four consecutive sessions on one page all stream", async ({ page }) 
     await expect(session).toContainText("session finished", { timeout: 120_000 });
   };
 
-  await page.getByRole("combobox").selectOption("initech");
+  await systemControls.getByRole("combobox").selectOption("initech");
 
   // Four, not two. Each finished-but-unclosed stream costs one browser
   // connection slot, so two sessions never exhausted the pool and the spec

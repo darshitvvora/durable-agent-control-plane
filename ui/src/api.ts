@@ -20,6 +20,12 @@ export const api = {
   status: () => get<FleetStatus>("/api/metrics/status"),
   jobs: (tenantId: string) => get<Job[]>(`/api/jobs?tenant_id=${encodeURIComponent(tenantId)}`),
   jobState: (jobId: string) => get<SessionState>(`/api/jobs/${encodeURIComponent(jobId)}/state`),
+  runSession: (agentId: string, tenantId: string, prompt: string) =>
+    post<{ job_id: string }>(
+      `/api/jobs?agent_id=${encodeURIComponent(agentId)}&tenant_id=${encodeURIComponent(
+        tenantId,
+      )}&prompt=${encodeURIComponent(prompt)}`,
+    ),
 
   install: (tenantId: string, agentId: string) =>
     post<Tenant>(
