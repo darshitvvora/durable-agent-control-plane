@@ -5,7 +5,8 @@
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
-	demo-flood demo-fairness-on demo-fairness-off demo-metrics demo-ramp demo-kill-worker demo-reset
+	demo-flood demo-fairness-on demo-fairness-off demo-metrics demo-ramp demo-kill-worker demo-reset \
+	demo-seed demo-prepare preflight
 
 # --- dev loop — Temporal Cloud only, no local server (CLAUDE.md §2) ---
 
@@ -167,3 +168,15 @@ demo-kill-worker:
 # dry run by default — pass ARGS="--yes" to actually reset
 demo-reset:
 	uv run python -m scripts.reset $(ARGS)
+
+# runs two real invoice-exception sessions so beat 0's memory recall has
+# genuine history to show — costs two real Bedrock sessions, not a dry run
+demo-seed:
+	uv run python -m scripts.seed_demo
+
+# the full pre-delivery sequence: reset for real, then seed. Spelled out as
+# two commands (not a dependency on demo-reset) so this target's --yes is
+# never accidentally inherited by a bare `make demo-reset` elsewhere.
+demo-prepare:
+	uv run python -m scripts.reset --yes
+	uv run python -m scripts.seed_demo
