@@ -62,8 +62,8 @@ test("flooding a tenant drives its lane and streams a real session", async ({ pa
 
   // Flood initech — the tier-1 flood generator — through the UI's own control.
   // Scoped to System Controls: the page now has a second combobox and a
-  // second "Run" button (Run session's agent picker and its submit button),
-  // so an unscoped query is ambiguous.
+  // second "Run" button (Run session's agent picker and its submit button,
+  // folded into the Session panel), so an unscoped query is ambiguous.
   const systemControls = page
     .getByRole("heading", { name: "System Controls", exact: true })
     .locator("xpath=../..");
@@ -87,18 +87,19 @@ test("flooding a tenant drives its lane and streams a real session", async ({ pa
 
 test("a session can be started from the UI and streams", async ({ page }) => {
   await page.goto("/");
-  // Scoped to the "Run session" panel rather than `getByRole("combobox").last()`:
-  // System Controls' tenant picker is also a combobox on this page, and which
-  // one is last in the DOM is an accident of layout, not a contract worth
-  // asserting on.
-  const runSession = page.getByRole("heading", { name: "Run session", exact: true }).locator("xpath=../..");
+  // Run session is folded into the Session panel (fix round 1: a standalone
+  // panel clipped the Agent Store on a 1080p stage screen), so scope to that
+  // panel rather than `getByRole("combobox").last()` — System Controls' tenant
+  // picker is also a combobox on this page, and which one is last in the DOM
+  // is an accident of layout, not a contract worth asserting on.
+  const session = page.getByRole("heading", { name: "Session", exact: true }).locator("xpath=../..");
   // selectOption's `label` matcher requires an exact string, not a RegExp —
   // the rendered option text is `${name} · tier ${tier}`.
-  await runSession.getByRole("combobox").selectOption({ label: "Returns Triage · tier 1" });
-  await runSession
+  await session.getByRole("combobox").selectOption({ label: "Returns Triage · tier 1" });
+  await session
     .getByPlaceholder("Prompt for this session")
     .fill("Order A-1004, unopened, 6 days since delivery.");
-  await runSession.getByRole("button", { name: "Run" }).click();
+  await session.getByRole("button", { name: "Run" }).click();
   await expect(page.getByText(/session started/)).toBeVisible({ timeout: 60_000 });
 });
 

@@ -1,11 +1,16 @@
 import { useState } from "react";
 import { api } from "../api";
 import type { AgentPackage } from "../types";
-import { Panel } from "./Panel";
 
-/** Launch one agent session. Without this the UI can only start floods, whose
- * agent is tier 1 and toolless — i.e. the only browser-launchable agent
- * touches no AgentCore services at all. Beats 0 and 2 need this. */
+/** Launch one agent session, as a compact single-line row inside the Session
+ * panel — where its output appears. Without this the UI can only start
+ * floods, whose agent is tier 1 and toolless — i.e. the only browser-
+ * launchable agent touches no AgentCore services at all. Beats 0 and 2 need
+ * this.
+ *
+ * Deliberately presentational, not its own Panel: the Agent Store is a list
+ * that must be read whole, so it cannot spare vertical space, but the
+ * Session terminal is a scrolling log that can (CLAUDE.md §7, fix round 1). */
 export function RunSession({
   agents,
   tenantId,
@@ -38,30 +43,33 @@ export function RunSession({
   };
 
   return (
-    <Panel title="Run session">
-      <div className="flex flex-col gap-2">
-        <select
-          className="btn font-mono text-[15px]"
-          value={selected}
-          onChange={(e) => setAgentId(e.target.value)}
-        >
-          {agents.map((a) => (
-            <option key={a.agent_id} value={a.agent_id}>
-              {a.name} · tier {a.tier}
-            </option>
-          ))}
-        </select>
-        <textarea
-          className="raised min-h-[64px] bg-[#1b1a16] p-2 font-mono text-[15px] text-ink"
-          placeholder="Prompt for this session"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-        />
-        <button className="btn" disabled={busy || !tenantId || !prompt.trim()} onClick={run}>
-          {busy ? "Starting..." : "Run"}
-        </button>
-        {error && <p className="font-mono text-[14px] text-alert">{error}</p>}
-      </div>
-    </Panel>
+    <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2">
+      <select
+        className="btn px-2 py-1 font-mono text-[13px]"
+        value={selected}
+        onChange={(e) => setAgentId(e.target.value)}
+      >
+        {agents.map((a) => (
+          <option key={a.agent_id} value={a.agent_id}>
+            {a.name} · tier {a.tier}
+          </option>
+        ))}
+      </select>
+      <input
+        type="text"
+        className="raised min-w-[220px] flex-1 bg-[#1b1a16] px-2 py-1 font-mono text-[13px] text-ink"
+        placeholder="Prompt for this session"
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+      />
+      <button
+        className="btn px-3 py-1 text-[13px]"
+        disabled={busy || !tenantId || !prompt.trim()}
+        onClick={run}
+      >
+        {busy ? "Starting..." : "Run"}
+      </button>
+      {error && <p className="font-mono text-[13px] text-alert">{error}</p>}
+    </div>
   );
 }
