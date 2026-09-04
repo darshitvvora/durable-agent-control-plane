@@ -40,6 +40,7 @@ memory-event purge — those four are always restored on `--yes`.
 
 import argparse
 import asyncio
+import time
 from typing import Any
 
 import boto3
@@ -111,25 +112,43 @@ def _memory_events(tenant_id: str) -> list[dict]:
             return events
 
 
-def _purge_memory(tenant_id: str) -> int:
-    """Delete this tenant's AgentCore Memory events.
+MEMORY_DELETE_CONCURRENCY = 12  # bounded so 432 events don't fire as 432 concurrent AWS calls
+
+
+async def _purge_memory(tenant_id: str, semaphore: asyncio.Semaphore) -> int:
+    """Delete this tenant's AgentCore Memory events, up to `semaphore`'s
+    concurrency limit at a time — shared across all tenants, not per-tenant,
+    so the total in-flight `delete_event` call count stays bounded regardless
+    of how many tenants are being purged at once.
 
     Every flood job writes one, so after a rehearsal a tenant's recall is
     dominated by identical load-test summaries. Beat 0's memory moment
     depends on recall surfacing genuine, relevant prior decisions instead.
+
+    One `delete_event` call per event, sequentially, measured at several
+    minutes for 432 events across three tenants (docs/DECISIONS.md,
+    2026-09-04) — long enough to matter for a reset that runs between live
+    deliveries with an audience waiting. Bounded concurrency (not unbounded:
+    432 at once risks AWS throttling) turns that into seconds; see
+    docs/DECISIONS.md for the measured before/after.
     """
     settings = get_settings()
     events = _memory_events(tenant_id)
     if not events:
         return 0
     client = _agentcore_client()
-    for event in events:
-        client.delete_event(
-            memoryId=settings.agentcore_memory_id,
-            sessionId=tenant_id,
-            eventId=event["eventId"],
-            actorId=tenant_id,
-        )
+
+    async def _delete(event: dict) -> None:
+        async with semaphore:
+            await asyncio.to_thread(
+                client.delete_event,
+                memoryId=settings.agentcore_memory_id,
+                sessionId=tenant_id,
+                eventId=event["eventId"],
+                actorId=tenant_id,
+            )
+
+    await asyncio.gather(*(_delete(event) for event in events))
     return len(events)
 
 
@@ -177,6 +196,12 @@ async def main() -> int:
     args = parser.parse_args()
 
     tenants = [args.tenant] if args.tenant else [t.tenant_id for t in repo.list_tenants()]
+    # --tenant narrows the four lines below (job rows/memory events); it does NOT narrow
+    # fairness/kill-switch/ramp/Mockoon — those are global settings, not tenant-scoped, and
+    # are always restored on --yes regardless of --tenant. Called out explicitly in the
+    # printed plan (Finding 1, fix round 1) so an operator narrowing scope mid-demo isn't
+    # surprised that an in-progress ramp or fairness toggle got reset anyway.
+    GLOBAL = "(global — ignores --tenant)"
 
     job_plan = {t: _job_ids(t) for t in tenants}
     memory_plan = {t: _memory_events(t) for t in tenants}
@@ -194,15 +219,15 @@ async def main() -> int:
         )
     print(f"  {'TOTAL':9} {total_jobs:4} job rows  {total_memory:4} memory events")
 
-    print(f"\nfairness enabled:  {fairness.enabled}  -> True")
-    print(f"kill switch armed: {kill_switch.armed}  -> False")
-    print("ramp: -> cleared")
+    print(f"\nfairness enabled:  {fairness.enabled}  -> True   {GLOBAL}")
+    print(f"kill switch armed: {kill_switch.armed}  -> False  {GLOBAL}")
+    print(f"ramp: -> cleared  {GLOBAL}")
 
     async with httpx.AsyncClient(timeout=10.0) as http:
         mockoon_sizes = {b: await _mockoon_bucket_size(http, b) for b in MOCKOON_BUCKETS}
         for bucket, size in mockoon_sizes.items():
             shown = "unreachable" if size is None else f"{size} records -> cleared"
-            print(f"mockoon /{bucket}: {shown}")
+            print(f"mockoon /{bucket}: {shown}  {GLOBAL}")
 
         if not args.yes:
             print("\ndry run — re-run with --yes to reset")
@@ -216,21 +241,43 @@ async def main() -> int:
                 repo.delete_job_result(job_id)
                 deleted_jobs += 1
 
-        deleted_memory = sum(_purge_memory(t) for t in tenants)
+        # Bounded concurrency (Finding 3, fix round 1): one delete_event call per
+        # in-flight slot, shared across all tenants, not 432 calls fired at once.
+        memory_semaphore = asyncio.Semaphore(MEMORY_DELETE_CONCURRENCY)
+        purge_started = time.monotonic()
+        deleted_memory = sum(
+            await asyncio.gather(*(_purge_memory(t, memory_semaphore) for t in tenants))
+        )
+        purge_seconds = time.monotonic() - purge_started
 
         repo.put_fairness_setting(FairnessSetting(enabled=True))
         repo.put_kill_switch(KillSwitch(armed=False))
         await clear_ramp()
 
+        # Finding 2, fix round 1: bucket reachability was snapshotted before the
+        # multi-minute job/memory purge above. If Mockoon died in that window, the
+        # PUT below must not crash the script after fairness/kill-switch/ramp have
+        # already been reset — catch it, note the bucket as not-cleared, and still
+        # reach the summary print below.
+        mockoon_cleared: dict[str, bool] = {}
         for bucket, size in mockoon_sizes.items():
-            if size is not None:  # reachable — always normalize to [], even if already 0
+            if size is None:  # already unreachable at snapshot time — nothing to PUT
+                mockoon_cleared[bucket] = False
+                continue
+            try:
                 await _clear_mockoon_bucket(http, bucket)
+                mockoon_cleared[bucket] = True
+            except httpx.HTTPError as exc:
+                print(f"WARNING: mockoon /{bucket} could not be cleared: {exc}")
+                mockoon_cleared[bucket] = False
 
         print(
             f"\ndeleted {deleted_jobs} job rows (+ result rows), "
-            f"{deleted_memory} memory events"
+            f"{deleted_memory} memory events ({purge_seconds:.1f}s)"
         )
         print("fairness restored to ON, kill switch disarmed, ramp cleared")
+        for bucket, cleared in mockoon_cleared.items():
+            print(f"mockoon /{bucket}: {'cleared' if cleared else 'NOT cleared'}")
 
         remaining_jobs = sum(len(_job_ids(t)) for t in tenants)
         remaining_memory = sum(len(_memory_events(t)) for t in tenants)
@@ -240,12 +287,25 @@ async def main() -> int:
             + ", ".join(f"{b}={remaining_mockoon[b]}" for b in MOCKOON_BUCKETS)
         )
 
+        # Finding 4, fix round 1: "unreachable" is not "clean" — the whole point of
+        # running reset is to know the demo is clean, so a Mockoon outage must not
+        # exit 0. Distinguish emptied (0), still-populated (>0), and unreachable
+        # (None), and fail loudly (and non-zero) on the latter two.
+        mockoon_ok = True
+        for bucket, size in remaining_mockoon.items():
+            if size is None:
+                print(f"WARNING: mockoon /{bucket} is unreachable — cannot confirm it is clean")
+                mockoon_ok = False
+            elif size != 0:
+                print(f"WARNING: mockoon /{bucket} still has {size} record(s)")
+                mockoon_ok = False
+
         ok = (
             remaining_jobs == 0
             and remaining_memory == 0
             and repo.get_fairness_setting().enabled
             and not repo.get_kill_switch().armed
-            and all(size in (0, None) for size in remaining_mockoon.values())
+            and mockoon_ok
         )
         return 0 if ok else 1
 
