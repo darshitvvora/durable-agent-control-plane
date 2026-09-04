@@ -770,3 +770,34 @@ Fixed:
 - `make verify-payment`: idempotency intact (provider count 0→1 on first call, stays at 1 on the same-activity-id retry, 1→2 on a genuinely different activity id).
 - `make verify-agents` (`scripts.verify_reference_agents`): all three reference agents (incident-triage, dispute-resolution, invoice-exception) ran to real outcomes.
 - API-side evidence, captured independently before this fix landed: `/api/metrics/status` measured at ~2.55s per call against an **idle** queue (no jobs running or queued), because it did several blocking boto3/DynamoDB reads inline on the event loop plus sequential (not concurrent) Temporal RPCs. `ui/src/App.tsx` polled that endpoint (plus three others) via `setInterval(fn, 2000)`, which fires on a fixed clock regardless of whether the previous call returned — so with response time (2.55s+) exceeding poll interval (2s), in-flight requests accumulated faster than they drained until the API stopped answering *anything*, with the backing stack otherwise completely idle. After the fix, the same endpoint was independently measured at ~1.6s (down from 2.55s) with the API's `--reload` picking up the change live, and the poll no longer overlaps.
+
+## 2026-09-04 — E8.1 T0: the third repeated-session cause, found — the stream never dropped
+
+Closes the item left open on 2026-09-01 ("on a later round the stream delivers a real session and then goes idle without ever receiving `job_finished`"). **It was not a dropped stream.** The browser tore its own live `EventSource` down, and the previous three notes all mis-framed it because they were looking at the transport.
+
+**Root cause.** `App.tsx` polled `GET /api/jobs?tenant_id=…` every 2s, took `jobs[0]` — the tenant's *newest* job — and handed it to `SessionTerminal`, whose stream effect keyed on that object. The demo runs a flood continuously underneath every beat, so a flood job is newer than the session the operator started roughly two seconds after they start it. The effect then re-ran: it cleared the transcript, closed the socket, and attached to the flood job. From the operator's seat that is exactly "the stream went quiet without finishing".
+
+**The evidence that settled it**, from console instrumentation logging the job id on every effect run plus every `EventSource` open/close (`readyState` on teardown is the load-bearing field):
+
+```
+[ 2.3s] pick: none -> session-returns-triage-e61520b3
+[ 3.2s] es-onopen ... event=job_started session-returns-triage-e61520b3
+[ 5.4s] pick: switch session-returns-triage-e61520b3 -> flood-initech-c3e1f525
+[ 5.4s] teardown job=session-returns-triage-e61520b3 readyState=1   <-- OPEN
+[ 5.4s] NETFAIL net::ERR_ABORTED .../session-returns-triage-e61520b3/events
+```
+
+`readyState === 1` is `OPEN`. Every *other* teardown in the same run logged `readyState === 2` (`CLOSED` — the session had genuinely finished and the two 2026-09-01 fixes had already closed it). One live socket, one abort, one session that never reached `job_finished`. The three fallback hypotheses in the brief — the six-connection-per-origin cap, `sse_starlette`'s ping versus `request.is_disconnected`, and offset resumption overshooting `job_finished` — were never reached, and the earlier note's instinct that "the server side is not implicated" was right for the wrong reason: the client aborted the request.
+
+**Fix.** `pinnedJobId` (already set by `RunSession.onStarted`) now suppresses auto-follow: the tenant poll early-returns while a session is pinned, and a separate effect resolves the pinned job through the new `api.job()` / existing `GET /api/jobs/{job_id}`. Auto-follow is still the right default for a page nobody has interacted with — it is how the flood beat shows a live session with no clicks — so it is disabled only while something is explicitly pinned, and **selecting a tenant releases the pin**, without which the first browser-started session would freeze the pane and clicking a lane would silently do nothing.
+
+**Two things the fix surfaced that were worth fixing with it, both the same defect class.**
+
+- The stream effect keyed on the `Job` *object*, not its id. The tenant poll and the pinned-session fetch return equal-but-distinct objects for the same session, so the second one tore down a stream already live on that very job — the bug re-introduced by its own fix. Now keyed on `job?.job_id`. Caught in the first passing run (a `readyState=0` teardown followed immediately by a re-attach to the same id), not by reasoning.
+- `data-job-id` on the transcript element. The pane previously had no observable identity once tokens started arriving, which is precisely why the old spec could not see the defect.
+
+**The guard had to be rewritten, not just un-`fixme`d, and that is the more transferable lesson.** The existing "four consecutive sessions" spec drove each round from the *flood* control and asserted an unscoped `toContainText("session started")`. Under the live defect it passed — the pane really did contain "session started", just from the flood job it had been swapped onto. Un-`fixme`ing it would have produced a green guard over an unfixed bug, the same class of mistake the 2026-09-01 entry records. It now starts four **explicit** sessions from the Session panel's own control (`returns-triage`, tier 1, deliberately a different agent from the flood's `incident-triage`), fires a 3-job flood *after* each one so the flood's jobs are strictly newer, and scopes every assertion to `[data-job-id="<the job this round started>"]`. A swapped pane makes the locator vanish rather than match the wrong transcript.
+
+**Proven in both directions, with the final spec against the final code.** Fix reverted (one line: auto-follow no longer checks `pinnedJobId`) → fails on round 0, `element(s) not found`, last observed pane text `"session-returns-triage-45e9f77c — waiting for output (running)"`. Fix restored → full suite **8 passed (1.4m)**, all four rounds streaming `job_started` through `job_finished` on their own job id. UI-only change: no workflow code touched, **no `BUILD_ID` bump**.
+
+**Unrelated, observed, not chased:** two `500`s on `/api/*` at page load in one run immediately after a heavy flood backlog, with the first job poll taking 26s to return. It predates and survives this change and is E8.1 T5's territory (blocking calls on the API event loop), not this one's. Recorded so it is not rediscovered as a streaming defect.

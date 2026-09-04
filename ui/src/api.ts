@@ -19,6 +19,7 @@ export const api = {
   lanes: () => get<Lane[]>("/api/metrics/lanes"),
   status: () => get<FleetStatus>("/api/metrics/status"),
   jobs: (tenantId: string) => get<Job[]>(`/api/jobs?tenant_id=${encodeURIComponent(tenantId)}`),
+  job: (jobId: string) => get<Job>(`/api/jobs/${encodeURIComponent(jobId)}`),
   jobState: (jobId: string) => get<SessionState>(`/api/jobs/${encodeURIComponent(jobId)}/state`),
   runSession: (agentId: string, tenantId: string, prompt: string) =>
     post<{ job_id: string }>(

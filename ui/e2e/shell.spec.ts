@@ -105,46 +105,60 @@ test("a session can be started from the UI and streams", async ({ page }) => {
 
 // Every spec above starts from a fresh page, which is exactly why none of them
 // caught the defect this one guards: a presenter runs several sessions in a row
-// without reloading, and the *second* one used to never stream at all — the
-// pane showed the new job id, polled /state fine, and sat at "waiting for
-// output" forever. Cause was the session terminal leaving its EventSource open
-// after a session ended, so the browser reconnect-looped on a dead stream until
-// the page ran out of connections (docs/DECISIONS.md, 2026-09-01).
-// KNOWN FAILING — deliberately `fixme` rather than deleted or left red, so the
-// gap stays visible in every run without turning the suite red. Tracked as
-// E8.1 T0; see docs/DECISIONS.md (2026-09-01). Two real causes were found and
-// fixed from this reproduction (an unclosed EventSource reconnect-looping after
-// `job_finished`, and the same loop when attaching to an already-terminal job),
-// but a third remains: on a later round the stream delivers a real session and
-// then drops before `job_finished`. Remove the `.fixme` once that is fixed.
-test.fixme("four consecutive sessions on one page all stream", async ({ page }) => {
+// without reloading, on a page that also has a flood running underneath. Beats
+// 0-3 of the demo script are exactly that shape.
+//
+// Three distinct causes have been found from this reproduction; the first two
+// were fixed on 2026-09-01 (an unclosed EventSource reconnect-looping after
+// `job_finished`, and the same loop when attaching to an already-terminal job).
+// The third, fixed under E8.1 T0: the pane followed the tenant's *newest* job on
+// a 2s poll, so a flood job arriving mid-session tore down a live EventSource
+// (`readyState === 1`, `job_started` already delivered) and re-attached
+// elsewhere — indistinguishable on stage from "the stream died without
+// finishing". See docs/DECISIONS.md (2026-09-04).
+//
+// The assertions are scoped to `[data-job-id=...]` for the session this round
+// actually started. That is the whole point: an unscoped "contains session
+// started" passes on a flood job's transcript, which is how the previous
+// version of this spec passed while the defect was live.
+test("four consecutive sessions on one page all stream", async ({ page }) => {
   await page.goto("/");
 
   const session = page.getByRole("heading", { name: "Session", exact: true }).locator("xpath=../..");
   const systemControls = page
     .getByRole("heading", { name: "System Controls", exact: true })
     .locator("xpath=../..");
-  const runOneSession = async (first: boolean) => {
-    // Three per round, not one: a single tier-1 job can finish inside the 2s
-    // job-poll interval, so the pane attaches to an already-finished session
-    // and legitimately has nothing to stream. A small burst keeps the newest
-    // job running long enough to be observed, same as the flood spec above.
-    await systemControls.getByRole("spinbutton", { name: "flood count" }).fill("3");
-    await systemControls.getByRole("button", { name: "Run" }).click();
-    // Waiting for the pane to go *empty* first is what makes the second pass
-    // meaningful: the previous session's transcript is still on screen, so
-    // asserting "session started" straight away would pass on stale text. The
-    // pane clears only when it switches to the new job.
-    if (!first) await expect(session).not.toContainText("session finished", { timeout: 90_000 });
-    await expect(session).toContainText("session started", { timeout: 90_000 });
-    await expect(session).toContainText("session finished", { timeout: 120_000 });
-  };
 
   await systemControls.getByRole("combobox").selectOption("initech");
+  await systemControls.getByRole("spinbutton", { name: "flood count" }).fill("3");
+  // Returns Triage is tier 1 and toolless — cheap enough to run four times, and
+  // a different agent from the flood's (incident-triage), so a swapped-in flood
+  // job is visible in the transcript rather than looking like the same session.
+  await session.getByRole("combobox").selectOption({ label: "Returns Triage · tier 1" });
 
-  // Four, not two. Each finished-but-unclosed stream costs one browser
-  // connection slot, so two sessions never exhausted the pool and the spec
-  // passed even with the fix reverted — a guard that cannot fail. Four
-  // reproduces the original failure reliably.
-  for (let i = 0; i < 4; i++) await runOneSession(i === 0);
+  const runOneSession = async (round: number) => {
+    await session
+      .getByPlaceholder("Prompt for this session")
+      .fill(`Order A-100${round}, unopened, ${round + 3} days since delivery.`);
+    const [response] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/jobs",
+      ),
+      session.getByRole("button", { name: "Run" }).click(),
+    ]);
+    const { job_id: jobId } = (await response.json()) as { job_id: string };
+
+    // Flood *after* starting the session, so the flood's jobs are newer than it
+    // — that is what used to yank the pane away. The demo runs a flood
+    // continuously underneath these beats, so this is the real shape, not a
+    // contrived race.
+    await systemControls.getByRole("button", { name: "Run" }).click();
+
+    const well = session.locator(`[data-job-id="${jobId}"]`);
+    await expect(well).toBeVisible({ timeout: 30_000 });
+    await expect(well).toContainText("session started — returns-triage", { timeout: 90_000 });
+    await expect(well).toContainText("session finished", { timeout: 120_000 });
+  };
+
+  for (let round = 0; round < 4; round++) await runOneSession(round);
 });
