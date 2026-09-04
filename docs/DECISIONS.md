@@ -801,3 +801,27 @@ Closes the item left open on 2026-09-01 ("on a later round the stream delivers a
 **Proven in both directions, with the final spec against the final code.** Fix reverted (one line: auto-follow no longer checks `pinnedJobId`) → fails on round 0, `element(s) not found`, last observed pane text `"session-returns-triage-45e9f77c — waiting for output (running)"`. Fix restored → full suite **8 passed (1.4m)**, all four rounds streaming `job_started` through `job_finished` on their own job id. UI-only change: no workflow code touched, **no `BUILD_ID` bump**.
 
 **Unrelated, observed, not chased:** two `500`s on `/api/*` at page load in one run immediately after a heavy flood backlog, with the first job poll taking 26s to return. It predates and survives this change and is E8.1 T5's territory (blocking calls on the API event loop), not this one's. Recorded so it is not rediscovered as a streaming defect.
+
+## 2026-09-04 — E8.1 T4: `scripts/reset.py` empties Mockoon CRUD buckets with `PUT`, not `DELETE`
+
+The reset script (`make demo-reset`) needed to empty Mockoon's `payments` and `dispute-responses` buckets as part of returning the whole demo to a clean state. The plan's assumption — add `DELETE /payments` / `DELETE /dispute-responses` routes and call them — turned out to be wrong, verified empirically against the live instance rather than guessed, the same discipline CLAUDE.md §11 asks of AWS API shapes applied here to Mockoon's.
+
+**What `DELETE` actually does.** Reading `@mockoon/commons` (`crudRoutesBuilder`, installed version 9.8.0 via `@mockoon/cli`) shows every CRUD-type route already auto-generates a bucket-level `DELETE` (no JSON edit needed — it comes free with the `crud` route type already in `mocks/payment-service.json`). But `databucketActions`'s `delete` case (`@mockoon/commons-server`) does:
+
+```js
+case 'delete': {
+    databucket.value = undefined;
+    response.status(200);
+    break;
+}
+```
+
+— it sets the *live* databucket value to `undefined`, not `[]`. Confirmed live: `curl -X DELETE http://localhost:3001/payments` returns `{}` (200), then `curl -s http://localhost:3001/payments` returns an **empty response body**, not `[]`. An empty body is not valid JSON. `app/demo.py::payment_count` (`len(response.json())`) and this reset script's own dry-run counter both raise on it — the exact "unreachable/broken" case the reset script exists to avoid leaving the demo in.
+
+**What actually works.** The same CRUD route type's bucket-level `PUT` ("update all items") runs `databucketActions`'s `update` case: `databucket.value = requestBody`. Sending `PUT .../payments` with body `[]` sets the live value to a real empty array and responds `[]`; the following `GET` also returns `[]`. Confirmed live for both `payments` and `dispute-responses` — same CRUD route shape in `mocks/payment-service.json` (`type: "crud"`, one `databucketID` each), same result.
+
+**Consequence: no edit to `mocks/payment-service.json`, no Mockoon restart.** Both reset routes come free from the existing `crud` route type. `scripts/reset.py::_clear_mockoon_bucket` calls `PUT .../<bucket>` with `json=[]`; nothing in the Mockoon collection changed.
+
+**Why this almost looked like a per-bucket bug instead of a version issue.** A full `--yes` run purges every AgentCore Memory event one `delete_event` call at a time (see below) — slow enough that a first attempt was killed mid-run by session/task cleanup after finishing memory, fairness, the kill switch, the ramp clear, and the `payments` bucket, but before reaching `dispute-responses` (next in `MOCKOON_BUCKETS` iteration order). An independent check afterward correctly found `payments` empty and `dispute-responses` still populated, which reads exactly like "the two buckets are configured differently" — they are not; `mocks/payment-service.json`'s `payments` and `dispute-responses` routes are structurally identical (`crud` type, one databucket each, differing only in `endpoint`/`databucketID`/`crudKey`). Re-running the script to completion (this time to a finished process, not one that got torn down mid-run) cleared both. The lesson is about run duration, not route configuration — see the note below.
+
+**One `delete_event` API call per memory event is slow enough to matter on stage.** A full purge across acme/globex/initech (432 events measured on 2026-09-04, mostly from repeated flood rehearsals) took multiple minutes end to end because `_purge_memory` deletes one event per synchronous `bedrock-agentcore` `delete_event` call, sequentially, with no batching API available on this data plane. Fine for correctness and for a once-before-the-8-minute-run reset; not fine if `demo-reset` needs to run *between* deliveries with an audience waiting. If that becomes a real constraint, parallelize the per-tenant delete loop (`asyncio.gather` over `asyncio.to_thread`-wrapped `delete_event` calls, same pattern as the E8.1 T5 fix above) rather than accept the current sequential cost as fixed.

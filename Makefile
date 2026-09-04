@@ -5,7 +5,7 @@
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
-	demo-flood demo-fairness-on demo-fairness-off demo-metrics demo-ramp demo-kill-worker
+	demo-flood demo-fairness-on demo-fairness-off demo-metrics demo-ramp demo-kill-worker demo-reset
 
 # --- dev loop — Temporal Cloud only, no local server (CLAUDE.md §2) ---
 
@@ -162,3 +162,8 @@ demo-ramp:
 
 demo-kill-worker:
 	uv run dos demo kill-worker --at-tool-boundary
+
+# needs Mockoon running (for the payments/dispute-responses bucket reset);
+# dry run by default — pass ARGS="--yes" to actually reset
+demo-reset:
+	uv run python -m scripts.reset $(ARGS)

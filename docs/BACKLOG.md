@@ -294,20 +294,54 @@ CLI: `dos demo kill-worker --at-tool-boundary`, `dos demo payment-count`. UI: Sy
 
 - [x] T0 **Root-caused and fixed 2026-09-04** (see `docs/DECISIONS.md`). Third cause was not a dropped stream at all: `App.tsx` re-picked the tenant's *newest* job every 2s and handed it to `SessionTerminal`, so a flood job arriving mid-session tore down a **live** `EventSource` (`readyState === 1`, `job_started` already delivered) and re-attached elsewhere — `job_finished` never arrived for the session the operator was watching. `pinnedJobId` now wins over auto-follow; the stream effect keys on `job?.job_id` rather than the object; selecting a tenant releases the pin. `.fixme` removed and the spec rewritten to start four *explicit* sessions with a flood underneath (the demo's real shape) and assert against `[data-job-id]`, because the old flood-driven version passed on a flood job's transcript while the defect was live. Proven both directions: fails on round 0 without the fix, 8/8 pass with it. No `BUILD_ID` bump — UI only.
 - [x] T5 **Blocking boto3 in async activities starves the worker event loop** — found 2026-09-02, accepted not fixed at first; reopened and fixed 2026-09-04 (see `docs/DECISIONS.md`'s three 2026-09-02/09-04 entries) once the AgentCore-first restructure put the flood underneath every demo beat. Fixed on both the worker (`app/activities/registry.py`, `app/activities/memory.py`, `app/worker.py`'s `max_concurrent_activities=20`) and — found during this fix, not in the original scope — the identical pattern on the API (`app/registry/fleet.py`, `app/api/routes/metrics.py`, plus the UI's `setInterval` poll in `ui/src/App.tsx` compounding it into a full API wedge). No `BUILD_ID` bump. **Verified 2026-09-04:** `scripts/verify_flood_health.py` (new) 30/30 completed, 0 failed, 0 activities past attempt 1; `make replay` clean against 20 v18 histories; `make verify-payment` and `make verify-agents` (`scripts.verify_reference_agents`) both clean.
-- [ ] T1 Mockoon collections for every external service
+- [x] T1 **Mockoon collections for every external service — confirmed complete 2026-09-04.** One environment (`mocks/payment-service.json`, port 3001) is the whole set — grepped every `mockoon_base_url` call site (`app/activities/payment.py`, `app/activities/dispute.py`, `app/demo.py::payment_count`, plus the `scripts/verify_*` readers) and found nothing outside it; no mock invented for anything uncalled. Inventory written up in `mocks/README.md` (route ↔ call-site table).
 - [ ] T2 `docs/DEMO_SCRIPT.md` — click-by-click, timed
 - [ ] T3 Full-run recording as in-window fallback (in case of AWS/network flakiness, not as an offline substitute)
-- [~] T4 Reset script — return to clean state between deliveries. `scripts/reset.py` clears `Job` rows and their result rows (dry run by default, `--yes` to delete, tenants read from the registry). Built 2026-09-02 because proof 1 needs it: `tenant_wait_p95` windows by sample count, not time, so an un-reset round blends the previous round's waits into the next one. **Still outstanding:** Mockoon payment/dispute buckets, restoring fairness to ON, disarming the kill switch, clearing an active ramp.
+- [x] T4 **Reset script — completed 2026-09-04.** `scripts/reset.py` (via `make demo-reset`) now returns all six dimensions to clean state: `Job`/`JobResult` rows, per-tenant AgentCore Memory events (`list_events`/`delete_event`, verified against the installed boto3 service model rather than guessed), fairness restored to ON, kill switch disarmed, an active Worker Deployment ramp cleared (`app/demo.py::clear_ramp`), and the Mockoon `payments`/`dispute-responses` buckets emptied. **Deviation from the original plan, verified empirically against the live `@mockoon/cli` 9.8.0 instance:** the buckets are cleared with `PUT .../<bucket>` body `[]`, not `DELETE` — Mockoon's CRUD route type's auto-generated bucket-level `DELETE` sets the databucket to `undefined` rather than `[]`, which breaks JSON parsing on the next `GET` (including `app/demo.py::payment_count`). `PUT` sets the databucket to exactly the request body, so no changes to `mocks/payment-service.json` were needed — see `mocks/README.md` and `scripts/reset.py::_clear_mockoon_bucket`'s docstring. Dry run by default, `--yes` to act, `--tenant` scopes the job-row/memory-event purge (fairness/kill-switch/ramp/Mockoon are global, always restored on `--yes`). Tenants read from the registry throughout, never hardcoded.
 
 ---
 
 ## E9 — Deploy
 
-### Story E9.1 — AWS deployment
-- [ ] T1 SAM: DynamoDB, IAM roles (Lambda worker, Temporal Cloud → Lambda invoke), S3
-- [ ] T2 Workers as Serverless Workers on Lambda (the only worker lane); Temporal Cloud auth via API key, per `docs/DECISIONS.md`
-- [ ] T3 API + Mockoon on one App Runner service — one container, reverse-proxied so both the API and the Lambda worker can reach Mockoon
-- [ ] T4 UI on Amplify Hosting
+**Scope decision 2026-09-04:** E9.1 is **documented, not performed** — the SAM templates and the click-path go into `docs/AWS_SETUP.md` so a fork can deploy, but this repo's own demo is not deployed to AWS. The delivery lane is the laptop (E9.2). Anyone forking for a real deployment follows E9.1's written steps.
+
+### Story E9.1 — AWS deployment *(document only — do not deploy)*
+**Acceptance:** a reader can deploy a fork by following `docs/AWS_SETUP.md` alone. No resources are created by this repo's maintainers.
+
+- [ ] T1 SAM template committed + steps written up: DynamoDB, IAM roles (Lambda worker, Temporal Cloud → Lambda invoke), S3
+- [ ] T2 Steps for Workers as Serverless Workers on Lambda (the only deployed worker lane); Temporal Cloud auth via API key, per `docs/DECISIONS.md`
+- [ ] T3 Steps for API + Mockoon on one App Runner service — one container, reverse-proxied so both the API and the Lambda worker can reach Mockoon
+- [ ] T4 Steps for UI on Amplify Hosting
+- [ ] T5 Mark the whole section clearly as untested-by-us in `docs/AWS_SETUP.md` — writing steps we have not run and implying we have would be dishonest to a forker
+
+### Story E9.2 — LocalStack lane *(this is the one we actually build)*
+As a presenter, I run the demo from my laptop with the commodity AWS services local, so a DynamoDB or S3 hiccup at the venue cannot break the show.
+
+**Acceptance:** `make preflight` passes with `DynamoDB` and `S3` pointed at LocalStack; all three proofs still pass; `make replay` clean.
+
+**Read this before starting — the honest scope.** LocalStack covers **DynamoDB and S3 only**. Everything else stays on real AWS, and not by preference:
+
+| Service | Where it runs | Why |
+|---|---|---|
+| DynamoDB | LocalStack | registry, job index, idempotency, fairness/kill records |
+| S3 | LocalStack | External Storage claim-check (Preview) |
+| Bedrock (Claude, Nova) | **real AWS** | the models |
+| AgentCore Memory / Gateway / Code Interpreter / Runtime | **real AWS** | LocalStack has no AgentCore support |
+| Bedrock Guardrails | **real AWS** | ditto |
+| `vendor-directory` Lambda | **real AWS** | it is invoked *by* AgentCore Gateway, an AWS-hosted service that cannot reach a laptop |
+| Temporal Cloud | **real, remote** | CLAUDE.md §2 — never a local server |
+| Mockoon | laptop | already local |
+
+**So this does not remove the venue's internet dependency** — Bedrock, four AgentCore services and Temporal Cloud are all still remote. It reduces blast radius for two services; it is not an offline mode, and must not be described as one.
+
+- [ ] T1 **Supersede the conflicting rules first.** CLAUDE.md §2's "Real AWS, not offline … no DynamoDB Local" and §5's "DynamoDB (real AWS, all environments)" both forbid this. Amend both and append a `docs/DECISIONS.md` entry superseding the 2026-08-21 decision, with the reasoning above. Do not write code before this — the repo must not contradict itself.
+- [ ] T2 Choose Docker Desktop vs LocalStack Desktop and record why. Note that E0.1 T2 deliberately removed Docker Compose from this project; reintroducing a container runtime is a reversal that needs stating.
+- [ ] T3 Endpoint-override plumbing: one place that decides the boto3 endpoint per service, driven by env (`AWS_ENDPOINT_URL_DYNAMODB`, `AWS_ENDPOINT_URL_S3`). Must **not** leak into the six AgentCore/Bedrock clients. Folds naturally into the shared `app/aws.py` session helper already noted as owed (2026-09-02) — the eight duplicated session blocks become one.
+- [ ] T4 Temporal External Storage against LocalStack S3 — `_SyncBoto3S3Client` needs the endpoint override and probably `s3_force_path_style`. Verify with `make verify-external-storage`, which already asserts real byte counts.
+- [ ] T5 Table + bucket creation on a fresh LocalStack: a script, since the human-run AWS Console click-path from `docs/AWS_SETUP.md` does not apply. This is the one place the "AWS actions are manual" rule (CLAUDE.md §2) legitimately does not bind, because nothing real is being created — say so in the script's docstring.
+- [ ] T6 `make preflight` distinguishes LocalStack-backed from real endpoints and prints which is which, so nobody mistakes a passing preflight for a real-AWS check.
+- [ ] T7 Re-verify all three proofs on the LocalStack lane, plus `make replay`. Proof 3 is the one at risk: idempotency lives in DynamoDB, so LocalStack's consistency behaviour is directly load-bearing on the payment counter reading exactly 1.
+- [ ] T8 Document the split in `docs/RUNBOOK.md` — which services are local, which are remote, and the explicit statement that this is not an offline mode.
 
 ---
 
