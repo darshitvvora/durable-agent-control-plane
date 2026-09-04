@@ -114,9 +114,13 @@ async def set_ramp(build_id: str, percentage: float) -> None:
 async def arm_kill_switch() -> KillSwitch:
     """Arm the next consequential-tool call to crash the worker right after
     its external side effect succeeds (E6.2, proof 3). Fires inside
-    `app.activities.idempotency.run_once`, wherever a job hits it next."""
+    `app.activities.idempotency.run_once`, wherever a job hits it next.
+
+    boto3 is synchronous, so the put_item goes to a thread — same defect
+    class as the rest of E8.1 T5, just off the flood hot path (docs/DECISIONS.md).
+    """
     setting = KillSwitch(armed=True)
-    repo.put_kill_switch(setting)
+    await asyncio.to_thread(repo.put_kill_switch, setting)
     return setting
 
 
