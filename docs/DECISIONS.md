@@ -744,3 +744,29 @@ The two activities differ only in retry budget, which is why they present differ
 3. Cap `max_concurrent_activities` alone — mitigation only; the blocking remains.
 
 No `BUILD_ID` bump would be needed for any of them: activity implementations change, activity type names and the workflow's command sequence do not.
+
+## 2026-09-04 — E8.1 T5 reopened and fixed, on both the worker and the API
+
+Accepted-not-fixed stopped holding: the AgentCore-first restructure put the cold-open flood underneath demo beats 0–3 instead of as its own standalone beat, so the worker is now loaded during every beat, not just a dedicated flood beat. Option 1 from the prior entry was implemented (threaded the hot-path boto3 calls, capped `max_concurrent_activities`), not option 2 (sync `def` activities) — smallest diff, no activity-type changes.
+
+**Worker side (the brief's original scope):**
+- `app/activities/registry.py` — `resolve_agent_package` and `mark_job_started` now wrap their `repo.*` boto3 calls in `asyncio.to_thread(...)`.
+- `app/activities/memory.py` — `recall_tenant_memory`'s `list_events` and `record_tenant_memory`'s `create_event` (both AgentCore Memory data-plane, also synchronous boto3) do the same.
+- `app/worker.py` — `Worker(...)` now sets `max_concurrent_activities=20` (SDK default is 100); one laptop worker does not have the throughput to make 100 concurrent Bedrock/AgentCore calls meaningful, it only means more of them queue behind the same event loop.
+
+**API side (found while re-verifying this task, not in the original brief): the same defect class, worse.** `/api/metrics/lanes` and `/api/metrics/status` are `async def` and were calling blocking `repo.*`/boto3 reads directly on the event loop, several times per request, with independent Temporal RPCs awaited sequentially rather than concurrently. Measured `/api/metrics/status` at ~2.55s response time against an **idle** stack. The UI's poll (`ui/src/App.tsx`, `POLL_MS = 2000`) used `setInterval`, which does not wait for the previous call to finish — so a 2s cadence against a 2.5s+ response accumulated in-flight requests faster than they drained, and the whole API wedged with the stack otherwise idle. This is the same root cause as the worker-side problem (sync boto3 on an async path), just with `setInterval` compounding it into total lockup instead of retries.
+
+Fixed:
+- `app/registry/fleet.py::lanes` — the per-tenant loop now builds each `Lane` by `asyncio.gather`-ing `tenant_running` (Temporal RPC, already async), `tenant_queued`, and `tenant_wait_p95` (both threaded boto3), and gathers all tenants' rows concurrently too. `repo.list_tenants()` itself also goes through `asyncio.to_thread`.
+- `app/api/routes/metrics.py::status` — the blocking `repo.get_fairness_setting()` read is threaded; all five independent pieces (two Temporal RPCs, the threaded DynamoDB read, ramp status, payment count) are gathered concurrently instead of awaited one at a time.
+- `app/api/routes/metrics.py::fleet_metrics` is a plain `def` route — Starlette already runs it in a threadpool, so it was never actually broken; left untouched deliberately (converting a correct `def` route to `async def` would reintroduce the exact bug being fixed). Same reasoning applied to `tenants.py`, `agents.py`, and the `def` routes in `jobs.py` — checked, none had the pattern. `jobs.py`'s `async def` routes (`create_job` via `app/sessions.py`, `submit_approval`, `get_job_state`) were already either threaded or Temporal-RPC-only.
+- `ui/src/App.tsx` — both polling effects (fleet refresh and the tenant's-newest-job picker) switched from `setInterval` to a self-scheduling `setTimeout` loop with an in-flight guard, so `POLL_MS` is the gap *after* the previous call resolves, not a fixed clock that ignores how long it took. A slow or hung endpoint now degrades the poll cadence instead of piling up concurrent requests.
+
+**No `BUILD_ID` bump.** Every activity's name, parameters, and return type are unchanged — only what runs inside the `async def` body changed. `make replay` clean against 20 v18 histories.
+
+**Verified 2026-09-04, after an AWS SSO refresh and a worker restart:**
+- `scripts/verify_flood_health.py` (new, per the brief): 30/30 flood jobs completed, 0 failed, **0 activities needing more than one attempt** — the attempt-count assertion is the actual gate (attempt 2 on a millisecond DynamoDB read is the starvation signature the whole task exists to eliminate), and it held clean.
+- `make replay`: clean against 20 v18 histories — confirms the "no `BUILD_ID` bump" claim, not just asserts it.
+- `make verify-payment`: idempotency intact (provider count 0→1 on first call, stays at 1 on the same-activity-id retry, 1→2 on a genuinely different activity id).
+- `make verify-agents` (`scripts.verify_reference_agents`): all three reference agents (incident-triage, dispute-resolution, invoice-exception) ran to real outcomes.
+- API-side evidence, captured independently before this fix landed: `/api/metrics/status` measured at ~2.55s per call against an **idle** queue (no jobs running or queued), because it did several blocking boto3/DynamoDB reads inline on the event loop plus sequential (not concurrent) Temporal RPCs. `ui/src/App.tsx` polled that endpoint (plus three others) via `setInterval(fn, 2000)`, which fires on a fixed clock regardless of whether the previous call returned — so with response time (2.55s+) exceeding poll interval (2s), in-flight requests accumulated faster than they drained until the API stopped answering *anything*, with the backing stack otherwise completely idle. After the fix, the same endpoint was independently measured at ~1.6s (down from 2.55s) with the API's `--reload` picking up the change live, and the poll no longer overlaps.

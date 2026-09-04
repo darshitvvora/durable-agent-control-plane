@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { AgentStore } from "./components/AgentStore";
 import { ProcessMonitor } from "./components/ProcessMonitor";
-import { RunSession } from "./components/RunSession";
 import { SessionTerminal } from "./components/SessionTerminal";
 import { StatusStrip } from "./components/StatusStrip";
 import { SystemControls } from "./components/SystemControls";
@@ -46,16 +45,34 @@ export default function App() {
     }
   }, []);
 
+  // Self-scheduling, not setInterval: setInterval fires on a fixed clock
+  // regardless of whether the previous call finished, so a slow response
+  // (metrics/status has been observed at 2.5s+ even against an idle stack)
+  // causes requests to pile up faster than they drain — the whole API wedges
+  // (docs/DECISIONS.md, E8.1 T5's API-side counterpart). Scheduling the next
+  // call only after this one resolves means POLL_MS is the *gap* between
+  // calls, not a fixed cadence that ignores how long the last one took.
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(timer);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const loop = async () => {
+      await refresh();
+      if (cancelled) return;
+      timer = setTimeout(loop, POLL_MS);
+    };
+    void loop();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [refresh]);
 
   // Follow the selected tenant's newest job — that is the session on screen.
+  // Same non-overlapping self-scheduling as the poll above.
   useEffect(() => {
     if (!tenantId) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const pick = async () => {
       try {
         const jobs = await api.jobs(tenantId);
@@ -66,11 +83,15 @@ export default function App() {
         /* the strip already surfaces API failure */
       }
     };
-    void pick();
-    const timer = setInterval(() => void pick(), POLL_MS);
+    const loop = async () => {
+      await pick();
+      if (cancelled) return;
+      timer = setTimeout(loop, POLL_MS);
+    };
+    void loop();
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
     };
   }, [tenantId]);
 
@@ -109,7 +130,7 @@ export default function App() {
       )}
 
       <main className="grid min-h-0 flex-1 grid-cols-1 gap-2 lg:grid-cols-[minmax(300px,1fr)_minmax(0,2fr)]">
-        <div className="grid min-h-0 grid-rows-[1fr_1fr_auto] gap-2">
+        <div className="grid min-h-0 grid-rows-2 gap-2">
           <AgentStore
             agents={agents}
             tenant={tenant}
@@ -124,11 +145,15 @@ export default function App() {
             onTenantChange={setTenantId}
             onChanged={refresh}
           />
-          <RunSession agents={agents} tenantId={tenantId} onStarted={setPinnedJobId} />
         </div>
         <div className="grid min-h-0 grid-rows-2 gap-2">
           <ProcessMonitor lanes={lanes} selected={tenantId} onSelect={setTenantId} />
-          <SessionTerminal job={job} />
+          <SessionTerminal
+            job={job}
+            agents={agents}
+            tenantId={tenantId}
+            onStarted={setPinnedJobId}
+          />
         </div>
       </main>
     </div>

@@ -16,6 +16,7 @@ No-ops cleanly if `AGENTCORE_MEMORY_ID` is unset, so a fork without Memory
 provisioned still runs — same shape as the empty `MCP_SERVER_CATALOG`.
 """
 
+import asyncio
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
@@ -42,16 +43,24 @@ def _client() -> Any:
 @activity.defn
 async def recall_tenant_memory(tenant_id: str) -> list[str]:
     """The tenant's last few job summaries, oldest first. Empty if Memory
-    isn't configured or this tenant has no history yet — never fabricated."""
+    isn't configured or this tenant has no history yet — never fabricated.
+
+    boto3 is synchronous, so the AgentCore Memory call goes to a thread: an
+    async activity that blocks freezes the worker's whole event loop, and
+    under a flood that turns a millisecond call into a start-to-close timeout
+    (docs/DECISIONS.md, E8.1 T5).
+    """
     settings = get_settings()
     if not settings.agentcore_memory_id:
         return []
-    response = _client().list_events(
-        memoryId=settings.agentcore_memory_id,
-        actorId=tenant_id,
-        sessionId=tenant_id,
-        includePayloads=True,
-        maxResults=RECALL_LIMIT,
+    response = await asyncio.to_thread(
+        lambda: _client().list_events(
+            memoryId=settings.agentcore_memory_id,
+            actorId=tenant_id,
+            sessionId=tenant_id,
+            includePayloads=True,
+            maxResults=RECALL_LIMIT,
+        )
     )
     notes: list[str] = []
     for event in response.get("events", []):
@@ -66,14 +75,20 @@ async def recall_tenant_memory(tenant_id: str) -> list[str]:
 async def record_tenant_memory(tenant_id: str, summary: str) -> None:
     """Append one event summarizing a completed job, for future recall by the
     same tenant. Best-effort — see agent_job.py: a memory write failing is
-    never a reason to fail the job it is summarizing."""
+    never a reason to fail the job it is summarizing.
+
+    Threaded for the same reason as recall_tenant_memory above — boto3 is
+    synchronous.
+    """
     settings = get_settings()
     if not settings.agentcore_memory_id:
         return
-    _client().create_event(
-        memoryId=settings.agentcore_memory_id,
-        actorId=tenant_id,
-        sessionId=tenant_id,
-        eventTimestamp=datetime.now(UTC),
-        payload=[{"conversational": {"content": {"text": summary}, "role": "OTHER"}}],
+    await asyncio.to_thread(
+        lambda: _client().create_event(
+            memoryId=settings.agentcore_memory_id,
+            actorId=tenant_id,
+            sessionId=tenant_id,
+            eventTimestamp=datetime.now(UTC),
+            payload=[{"conversational": {"content": {"text": summary}, "role": "OTHER"}}],
+        )
     )

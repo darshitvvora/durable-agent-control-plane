@@ -1,7 +1,7 @@
 .PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
 	verify-tenant-priority verify-streaming verify-agents verify-versioning verify-pinning verify-kill-resume \
 	verify-guardrail verify-returns-triage verify-run-session \
-	verify-sandbox-isolation verify-external-storage verify-hosted \
+	verify-sandbox-isolation verify-external-storage verify-hosted verify-flood-health \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
@@ -93,6 +93,10 @@ verify-external-storage:
 
 verify-hosted:
 	uv run python -m scripts.verify_hosted
+
+# needs `make worker` and Mockoon running — costs 30 real tier-1 jobs
+verify-flood-health:
+	uv run python -m scripts.verify_flood_health
 
 # non-determinism guard — replays real histories from Temporal Cloud (script lands with E1.1)
 replay:

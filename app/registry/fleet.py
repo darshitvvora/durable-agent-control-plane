@@ -12,6 +12,8 @@ rather than guessing, and the queued count — which comes from the job index an
 is always accurate — still renders.
 """
 
+import asyncio
+
 from pydantic import BaseModel
 from temporalio.api.enums.v1 import TaskQueueType
 from temporalio.api.taskqueue.v1 import TaskQueue
@@ -22,7 +24,7 @@ from temporalio.service import RPCError
 from app.config import get_settings
 from app.registry import repository as repo
 from app.registry.metrics import tenant_wait_p95
-from app.registry.models import JobStatus
+from app.registry.models import JobStatus, Tenant
 
 WORKFLOW_TYPE = "AgentJobWorkflow"
 TENANT_SEARCH_ATTRIBUTE = "TenantId"
@@ -97,21 +99,33 @@ class Lane(BaseModel):
     p95_wait_seconds: float | None
 
 
+async def _lane_for(client: Client, tenant: Tenant) -> Lane:
+    """One tenant's row. `tenant_running` is a Temporal RPC (already async);
+    `tenant_queued` and `tenant_wait_p95` are synchronous boto3 calls, so they
+    go to a thread — otherwise they'd block the API's single event loop
+    (docs/DECISIONS.md, E8.1 T5's API-side counterpart). All three run
+    concurrently since none depends on another's result.
+    """
+    running, queued, p95_wait_seconds = await asyncio.gather(
+        tenant_running(client, tenant.tenant_id),
+        asyncio.to_thread(tenant_queued, tenant.tenant_id),
+        asyncio.to_thread(tenant_wait_p95, tenant.tenant_id),
+    )
+    return Lane(
+        tenant_id=tenant.tenant_id,
+        name=tenant.name,
+        tier=tenant.tier,
+        priority_key=tenant.priority_key,
+        fairness_weight=tenant.fairness_weight,
+        running=running,
+        queued=queued,
+        p95_wait_seconds=p95_wait_seconds,
+    )
+
+
 async def lanes(client: Client) -> list[Lane]:
     """One row per tenant for the process monitor, busiest lane first."""
-    rows = [
-        Lane(
-            tenant_id=tenant.tenant_id,
-            name=tenant.name,
-            tier=tenant.tier,
-            priority_key=tenant.priority_key,
-            fairness_weight=tenant.fairness_weight,
-            running=await tenant_running(client, tenant.tenant_id),
-            queued=tenant_queued(tenant.tenant_id),
-            p95_wait_seconds=tenant_wait_p95(tenant.tenant_id),
-        )
-        for tenant in repo.list_tenants()
-    ]
+    tenants = await asyncio.to_thread(repo.list_tenants)
+    rows = await asyncio.gather(*(_lane_for(client, tenant) for tenant in tenants))
     # Heaviest lane first — the flooding tenant should be visually obvious.
-    rows.sort(key=lambda r: (r.running or 0) + r.queued, reverse=True)
-    return rows
+    return sorted(rows, key=lambda r: (r.running or 0) + r.queued, reverse=True)
