@@ -177,6 +177,7 @@ docs/
   DECISIONS.md           # ADR log — why things are the way they are
   BACKLOG.md             # epics → stories → tasks, with what is done and what is not
   MULTI_AGENT.md         # Swarm inside a job vs agents between jobs
+  RUNBOOK.md             # operating the demo from a laptop — terminals, preflight, failure modes
   DEMO_SCRIPT.md         # the run of show — to be completed (E8.1)
 ```
 
@@ -311,8 +312,7 @@ Built and verified against real AWS and Temporal Cloud:
 Tracked in [docs/BACKLOG.md](docs/BACKLOG.md); listed here so nothing is discovered the hard way.
 
 - **Deployment (E9).** Everything runs locally today against Temporal Cloud and real AWS. SAM templates, Serverless Workers on Lambda, API + Mockoon on App Runner, and UI on Amplify are not built.
-- **Repeated-session streaming (E8.1 T0).** The session terminal can stop streaming after several sessions on one long-lived page. Two causes found and fixed; a third — a stream that drops mid-session on a later round — is open, with a `test.fixme` reproduction in `ui/e2e/shell.spec.ts`.
-- **Demo hardening (E8.1).** `docs/DEMO_SCRIPT.md` is a placeholder; no reset script; no full-run recording; Mockoon collection coverage not audited.
+- **Demo hardening (E8.1/E8.2).** `docs/DEMO_SCRIPT.md` is still a placeholder, and there is no full-run recording; Mockoon collection coverage is not audited. `make demo-reset`, `make demo-seed` and `make preflight` do exist, and [docs/RUNBOOK.md](docs/RUNBOOK.md) covers operating the stack from a laptop.
 - **Rehearsals.** The 200-job fairness dress rehearsal, the 10× kill/restart rehearsal, and a 10-metre projector legibility pass are all still outstanding (each verified at reduced scale).
 - **Guardrail demonstrability.** The `OffPolicyPayment` denied topic is close to unreachable through a model turn — its definition overlaps the model's own refusal boundary, so the model declines before the gate is consulted. Reachable categories (e.g. the PII and profanity policies) are what the verification uses. See [docs/DECISIONS.md](docs/DECISIONS.md).
 - **Open-source release (E10).** Temporal Code Exchange publication is not done.
@@ -329,6 +329,7 @@ Tracked in [docs/BACKLOG.md](docs/BACKLOG.md); listed here so nothing is discove
 | [docs/DECISIONS.md](docs/DECISIONS.md) | ADR log — why, including the mistakes and what they cost |
 | [docs/BACKLOG.md](docs/BACKLOG.md) | Epics → stories → tasks, with real verification notes |
 | [docs/MULTI_AGENT.md](docs/MULTI_AGENT.md) | Swarm inside one job vs agents across jobs, and the durability tradeoff |
+| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Running the demo from a laptop — the four terminals, the pre-delivery timeline, and the failure-mode table |
 | [CLAUDE.md](CLAUDE.md) | The design non-negotiables this codebase is held to |
 
 ## License
