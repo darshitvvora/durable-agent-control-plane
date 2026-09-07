@@ -180,3 +180,8 @@ demo-seed:
 demo-prepare:
 	uv run python -m scripts.reset --yes
 	uv run python -m scripts.seed_demo
+
+# read-only readiness check for every external dependency + demo state
+# (E8.2 T4) — run this minutes before going on stage
+preflight:
+	uv run python -m scripts.preflight
