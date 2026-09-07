@@ -3,6 +3,7 @@ from temporalio.service import RPCError
 
 from app.registry import repository as repo
 from app.registry.models import Job
+from app.sessions import start_session
 from app.workflows.agent_job import AgentJobWorkflow
 from app.workflows.models import SessionState
 
@@ -12,6 +13,17 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 @router.get("")
 def list_jobs(tenant_id: str) -> list[Job]:
     return repo.list_jobs_for_tenant(tenant_id)
+
+
+@router.post("")
+async def create_job(agent_id: str, tenant_id: str, prompt: str) -> dict:
+    """Start one agent session. The demo's only way to run a non-flood agent
+    from the browser — beats 0 and 2 depend on it."""
+    try:
+        job_id = await start_session(agent_id, tenant_id, prompt)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"job_id": job_id}
 
 
 @router.get("/{job_id}")

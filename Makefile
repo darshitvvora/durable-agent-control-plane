@@ -1,11 +1,12 @@
 .PHONY: worker api ui e2e mockoon verify verify-agent verify-payment verify-tool-call verify-interrupt \
 	verify-tenant-priority verify-streaming verify-agents verify-versioning verify-pinning verify-kill-resume \
-	verify-guardrail verify-returns-triage \
-	verify-sandbox-isolation verify-external-storage verify-hosted \
+	verify-guardrail verify-returns-triage verify-run-session \
+	verify-sandbox-isolation verify-external-storage verify-hosted verify-flood-health \
 	replay lint typecheck format ci \
 	dos agent-list agent-init agent-validate agent-test agent-publish \
 	tenant-add tenant-list \
-	demo-flood demo-fairness-on demo-fairness-off demo-metrics demo-ramp demo-kill-worker
+	demo-flood demo-fairness-on demo-fairness-off demo-metrics demo-ramp demo-kill-worker demo-reset \
+	demo-seed demo-prepare preflight
 
 # --- dev loop — Temporal Cloud only, no local server (CLAUDE.md §2) ---
 
@@ -65,6 +66,10 @@ verify-streaming:
 verify-returns-triage:
 	uv run python -m scripts.verify_returns_triage
 
+# needs `make worker` and `make api` running
+verify-run-session:
+	uv run python -m scripts.verify_run_session
+
 # needs `make worker` and Mockoon running
 verify-agents:
 	uv run python -m scripts.verify_reference_agents
@@ -89,6 +94,10 @@ verify-external-storage:
 
 verify-hosted:
 	uv run python -m scripts.verify_hosted
+
+# needs `make worker` and Mockoon running — costs 30 real tier-1 jobs
+verify-flood-health:
+	uv run python -m scripts.verify_flood_health
 
 # non-determinism guard — replays real histories from Temporal Cloud (script lands with E1.1)
 replay:
@@ -154,3 +163,25 @@ demo-ramp:
 
 demo-kill-worker:
 	uv run dos demo kill-worker --at-tool-boundary
+
+# needs Mockoon running (for the payments/dispute-responses bucket reset);
+# dry run by default — pass ARGS="--yes" to actually reset
+demo-reset:
+	uv run python -m scripts.reset $(ARGS)
+
+# runs two real invoice-exception sessions so beat 0's memory recall has
+# genuine history to show — costs two real Bedrock sessions, not a dry run
+demo-seed:
+	uv run python -m scripts.seed_demo
+
+# the full pre-delivery sequence: reset for real, then seed. Spelled out as
+# two commands (not a dependency on demo-reset) so this target's --yes is
+# never accidentally inherited by a bare `make demo-reset` elsewhere.
+demo-prepare:
+	uv run python -m scripts.reset --yes
+	uv run python -m scripts.seed_demo
+
+# read-only readiness check for every external dependency + demo state
+# (E8.2 T4) — run this minutes before going on stage
+preflight:
+	uv run python -m scripts.preflight

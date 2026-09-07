@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, eventsUrl } from "../api";
-import type { Job, SessionState } from "../types";
+import type { AgentPackage, Job, SessionState } from "../types";
 import { Panel, Well } from "./Panel";
+import { RunSession } from "./RunSession";
 
 type Entry =
   | { kind: "text"; text: string }
@@ -11,7 +12,17 @@ type Entry =
   | { kind: "note"; text: string };
 
 /** Live tty for one session: tokens as they stream, tool calls as they fire. */
-export function SessionTerminal({ job }: { job: Job | null }) {
+export function SessionTerminal({
+  job,
+  agents,
+  tenantId,
+  onStarted,
+}: {
+  job: Job | null;
+  agents: AgentPackage[];
+  tenantId: string | null;
+  onStarted: (jobId: string) => void;
+}) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [state, setState] = useState<SessionState | null>(null);
   const [live, setLive] = useState(false);
@@ -130,7 +141,12 @@ export function SessionTerminal({ job }: { job: Job | null }) {
       cancelled = true;
       source.close();
     };
-  }, [job]);
+    // Keyed on the job *id*, not the object. Two fetches of the same session
+    // (the tenant poll and the pinned-session fetch) return equal-but-distinct
+    // objects, and keying on identity made the second one tear down a stream
+    // that was already live on that very job — the same failure this pin exists
+    // to prevent, just self-inflicted (E8.1 T0).
+  }, [job?.job_id]);
 
   useEffect(() => {
     wellRef.current?.scrollTo({ top: wellRef.current.scrollHeight });
@@ -166,8 +182,13 @@ export function SessionTerminal({ job }: { job: Job | null }) {
       }
       className="min-h-0"
     >
+      <RunSession agents={agents} tenantId={tenantId} onStarted={onStarted} />
       <Well className="flex-1 overflow-auto font-mono text-[18px] leading-[1.5]" >
-        <div ref={wellRef} className="h-full overflow-auto">
+        {/* Which session this transcript belongs to. On stage it is the job id
+            already printed in the empty state; in `make e2e` it is the only way
+            to assert that the pane held *this* session to completion rather
+            than being swapped onto a flood job mid-stream (E8.1 T0). */}
+        <div ref={wellRef} data-job-id={job?.job_id} className="h-full overflow-auto">
           {!job && <p className="text-ink-dim">Select a tenant with a running session.</p>}
           {job && entries.length === 0 && (
             <p className="text-ink-dim">

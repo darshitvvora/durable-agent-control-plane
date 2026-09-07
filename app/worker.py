@@ -59,6 +59,11 @@ async def main() -> None:
         workflow_runner=SandboxedWorkflowRunner(
             restrictions=SandboxRestrictions.default.with_passthrough_modules("strands", "boto3")
         ),
+        # The SDK default is 100. One laptop worker running 100 concurrent
+        # activities against Bedrock and AgentCore is not throughput, it is a
+        # queue with extra steps — and every one of them competes for the same
+        # event loop. Sized for the demo's single-worker lane (E8.1 T5).
+        max_concurrent_activities=20,
     )
 
     print(

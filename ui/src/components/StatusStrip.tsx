@@ -17,6 +17,16 @@ function Readout({ label, value, signal }: { label: string; value: string; signa
   );
 }
 
+/**
+ * Menu bar — always on, so no capability needs its own demo beat.
+ *
+ * Every readout is a live call, never a sample (CLAUDE.md §7 forbids fake
+ * numbers on a conference screen): `Workers` is Temporal's poller count for
+ * the task queue, `Running`/`Done`/`Failed` are workflow counts from its
+ * visibility store, and `Payments` is how many payments actually reached the
+ * provider — proof 3's counter, which must still read 1 after a worker is
+ * killed mid-payment and restarted.
+ */
 export function StatusStrip({ status }: { status: FleetStatus | null }) {
   const running = status?.jobs_by_status.Running ?? 0;
   const completed = status?.jobs_by_status.Completed ?? 0;

@@ -744,3 +744,116 @@ The two activities differ only in retry budget, which is why they present differ
 3. Cap `max_concurrent_activities` alone — mitigation only; the blocking remains.
 
 No `BUILD_ID` bump would be needed for any of them: activity implementations change, activity type names and the workflow's command sequence do not.
+
+## 2026-09-04 — E8.1 T5 reopened and fixed, on both the worker and the API
+
+Accepted-not-fixed stopped holding: the AgentCore-first restructure put the cold-open flood underneath demo beats 0–3 instead of as its own standalone beat, so the worker is now loaded during every beat, not just a dedicated flood beat. Option 1 from the prior entry was implemented (threaded the hot-path boto3 calls, capped `max_concurrent_activities`), not option 2 (sync `def` activities) — smallest diff, no activity-type changes.
+
+**Worker side (the brief's original scope):**
+- `app/activities/registry.py` — `resolve_agent_package` and `mark_job_started` now wrap their `repo.*` boto3 calls in `asyncio.to_thread(...)`.
+- `app/activities/memory.py` — `recall_tenant_memory`'s `list_events` and `record_tenant_memory`'s `create_event` (both AgentCore Memory data-plane, also synchronous boto3) do the same.
+- `app/worker.py` — `Worker(...)` now sets `max_concurrent_activities=20` (SDK default is 100); one laptop worker does not have the throughput to make 100 concurrent Bedrock/AgentCore calls meaningful, it only means more of them queue behind the same event loop.
+
+**API side (found while re-verifying this task, not in the original brief): the same defect class, worse.** `/api/metrics/lanes` and `/api/metrics/status` are `async def` and were calling blocking `repo.*`/boto3 reads directly on the event loop, several times per request, with independent Temporal RPCs awaited sequentially rather than concurrently. Measured `/api/metrics/status` at ~2.55s response time against an **idle** stack. The UI's poll (`ui/src/App.tsx`, `POLL_MS = 2000`) used `setInterval`, which does not wait for the previous call to finish — so a 2s cadence against a 2.5s+ response accumulated in-flight requests faster than they drained, and the whole API wedged with the stack otherwise idle. This is the same root cause as the worker-side problem (sync boto3 on an async path), just with `setInterval` compounding it into total lockup instead of retries.
+
+Fixed:
+- `app/registry/fleet.py::lanes` — the per-tenant loop now builds each `Lane` by `asyncio.gather`-ing `tenant_running` (Temporal RPC, already async), `tenant_queued`, and `tenant_wait_p95` (both threaded boto3), and gathers all tenants' rows concurrently too. `repo.list_tenants()` itself also goes through `asyncio.to_thread`.
+- `app/api/routes/metrics.py::status` — the blocking `repo.get_fairness_setting()` read is threaded; all five independent pieces (two Temporal RPCs, the threaded DynamoDB read, ramp status, payment count) are gathered concurrently instead of awaited one at a time.
+- `app/api/routes/metrics.py::fleet_metrics` is a plain `def` route — Starlette already runs it in a threadpool, so it was never actually broken; left untouched deliberately (converting a correct `def` route to `async def` would reintroduce the exact bug being fixed). Same reasoning applied to `tenants.py`, `agents.py`, and the `def` routes in `jobs.py` — checked, none had the pattern. `jobs.py`'s `async def` routes (`create_job` via `app/sessions.py`, `submit_approval`, `get_job_state`) were already either threaded or Temporal-RPC-only.
+- `ui/src/App.tsx` — both polling effects (fleet refresh and the tenant's-newest-job picker) switched from `setInterval` to a self-scheduling `setTimeout` loop with an in-flight guard, so `POLL_MS` is the gap *after* the previous call resolves, not a fixed clock that ignores how long it took. A slow or hung endpoint now degrades the poll cadence instead of piling up concurrent requests.
+
+**No `BUILD_ID` bump.** Every activity's name, parameters, and return type are unchanged — only what runs inside the `async def` body changed. `make replay` clean against 20 v18 histories.
+
+**Verified 2026-09-04, after an AWS SSO refresh and a worker restart:**
+- `scripts/verify_flood_health.py` (new, per the brief): 30/30 flood jobs completed, 0 failed, **0 activities needing more than one attempt** — the attempt-count assertion is the actual gate (attempt 2 on a millisecond DynamoDB read is the starvation signature the whole task exists to eliminate), and it held clean.
+- `make replay`: clean against 20 v18 histories — confirms the "no `BUILD_ID` bump" claim, not just asserts it.
+- `make verify-payment`: idempotency intact (provider count 0→1 on first call, stays at 1 on the same-activity-id retry, 1→2 on a genuinely different activity id).
+- `make verify-agents` (`scripts.verify_reference_agents`): all three reference agents (incident-triage, dispute-resolution, invoice-exception) ran to real outcomes.
+- API-side evidence, captured independently before this fix landed: `/api/metrics/status` measured at ~2.55s per call against an **idle** queue (no jobs running or queued), because it did several blocking boto3/DynamoDB reads inline on the event loop plus sequential (not concurrent) Temporal RPCs. `ui/src/App.tsx` polled that endpoint (plus three others) via `setInterval(fn, 2000)`, which fires on a fixed clock regardless of whether the previous call returned — so with response time (2.55s+) exceeding poll interval (2s), in-flight requests accumulated faster than they drained until the API stopped answering *anything*, with the backing stack otherwise completely idle. After the fix, the same endpoint was independently measured at ~1.6s (down from 2.55s) with the API's `--reload` picking up the change live, and the poll no longer overlaps.
+
+## 2026-09-04 — E8.1 T0: the third repeated-session cause, found — the stream never dropped
+
+Closes the item left open on 2026-09-01 ("on a later round the stream delivers a real session and then goes idle without ever receiving `job_finished`"). **It was not a dropped stream.** The browser tore its own live `EventSource` down, and the previous three notes all mis-framed it because they were looking at the transport.
+
+**Root cause.** `App.tsx` polled `GET /api/jobs?tenant_id=…` every 2s, took `jobs[0]` — the tenant's *newest* job — and handed it to `SessionTerminal`, whose stream effect keyed on that object. The demo runs a flood continuously underneath every beat, so a flood job is newer than the session the operator started roughly two seconds after they start it. The effect then re-ran: it cleared the transcript, closed the socket, and attached to the flood job. From the operator's seat that is exactly "the stream went quiet without finishing".
+
+**The evidence that settled it**, from console instrumentation logging the job id on every effect run plus every `EventSource` open/close (`readyState` on teardown is the load-bearing field):
+
+```
+[ 2.3s] pick: none -> session-returns-triage-e61520b3
+[ 3.2s] es-onopen ... event=job_started session-returns-triage-e61520b3
+[ 5.4s] pick: switch session-returns-triage-e61520b3 -> flood-initech-c3e1f525
+[ 5.4s] teardown job=session-returns-triage-e61520b3 readyState=1   <-- OPEN
+[ 5.4s] NETFAIL net::ERR_ABORTED .../session-returns-triage-e61520b3/events
+```
+
+`readyState === 1` is `OPEN`. Every *other* teardown in the same run logged `readyState === 2` (`CLOSED` — the session had genuinely finished and the two 2026-09-01 fixes had already closed it). One live socket, one abort, one session that never reached `job_finished`. The three fallback hypotheses in the brief — the six-connection-per-origin cap, `sse_starlette`'s ping versus `request.is_disconnected`, and offset resumption overshooting `job_finished` — were never reached, and the earlier note's instinct that "the server side is not implicated" was right for the wrong reason: the client aborted the request.
+
+**Fix.** `pinnedJobId` (already set by `RunSession.onStarted`) now suppresses auto-follow: the tenant poll early-returns while a session is pinned, and a separate effect resolves the pinned job through the new `api.job()` / existing `GET /api/jobs/{job_id}`. Auto-follow is still the right default for a page nobody has interacted with — it is how the flood beat shows a live session with no clicks — so it is disabled only while something is explicitly pinned, and **selecting a tenant releases the pin**, without which the first browser-started session would freeze the pane and clicking a lane would silently do nothing.
+
+**Two things the fix surfaced that were worth fixing with it, both the same defect class.**
+
+- The stream effect keyed on the `Job` *object*, not its id. The tenant poll and the pinned-session fetch return equal-but-distinct objects for the same session, so the second one tore down a stream already live on that very job — the bug re-introduced by its own fix. Now keyed on `job?.job_id`. Caught in the first passing run (a `readyState=0` teardown followed immediately by a re-attach to the same id), not by reasoning.
+- `data-job-id` on the transcript element. The pane previously had no observable identity once tokens started arriving, which is precisely why the old spec could not see the defect.
+
+**The guard had to be rewritten, not just un-`fixme`d, and that is the more transferable lesson.** The existing "four consecutive sessions" spec drove each round from the *flood* control and asserted an unscoped `toContainText("session started")`. Under the live defect it passed — the pane really did contain "session started", just from the flood job it had been swapped onto. Un-`fixme`ing it would have produced a green guard over an unfixed bug, the same class of mistake the 2026-09-01 entry records. It now starts four **explicit** sessions from the Session panel's own control (`returns-triage`, tier 1, deliberately a different agent from the flood's `incident-triage`), fires a 3-job flood *after* each one so the flood's jobs are strictly newer, and scopes every assertion to `[data-job-id="<the job this round started>"]`. A swapped pane makes the locator vanish rather than match the wrong transcript.
+
+**Proven in both directions, with the final spec against the final code.** Fix reverted (one line: auto-follow no longer checks `pinnedJobId`) → fails on round 0, `element(s) not found`, last observed pane text `"session-returns-triage-45e9f77c — waiting for output (running)"`. Fix restored → full suite **8 passed (1.4m)**, all four rounds streaming `job_started` through `job_finished` on their own job id. UI-only change: no workflow code touched, **no `BUILD_ID` bump**.
+
+**Unrelated, observed, not chased:** two `500`s on `/api/*` at page load in one run immediately after a heavy flood backlog, with the first job poll taking 26s to return. It predates and survives this change and is E8.1 T5's territory (blocking calls on the API event loop), not this one's. Recorded so it is not rediscovered as a streaming defect.
+
+## 2026-09-04 — E8.1 T4: `scripts/reset.py` empties Mockoon CRUD buckets with `PUT`, not `DELETE`
+
+The reset script (`make demo-reset`) needed to empty Mockoon's `payments` and `dispute-responses` buckets as part of returning the whole demo to a clean state. The plan's assumption — add `DELETE /payments` / `DELETE /dispute-responses` routes and call them — turned out to be wrong, verified empirically against the live instance rather than guessed, the same discipline CLAUDE.md §11 asks of AWS API shapes applied here to Mockoon's.
+
+**What `DELETE` actually does.** Reading `@mockoon/commons` (`crudRoutesBuilder`, installed version 9.8.0 via `@mockoon/cli`) shows every CRUD-type route already auto-generates a bucket-level `DELETE` (no JSON edit needed — it comes free with the `crud` route type already in `mocks/payment-service.json`). But `databucketActions`'s `delete` case (`@mockoon/commons-server`) does:
+
+```js
+case 'delete': {
+    databucket.value = undefined;
+    response.status(200);
+    break;
+}
+```
+
+— it sets the *live* databucket value to `undefined`, not `[]`. Confirmed live: `curl -X DELETE http://localhost:3001/payments` returns `{}` (200), then `curl -s http://localhost:3001/payments` returns an **empty response body**, not `[]`. An empty body is not valid JSON. `app/demo.py::payment_count` (`len(response.json())`) and this reset script's own dry-run counter both raise on it — the exact "unreachable/broken" case the reset script exists to avoid leaving the demo in.
+
+**What actually works.** The same CRUD route type's bucket-level `PUT` ("update all items") runs `databucketActions`'s `update` case: `databucket.value = requestBody`. Sending `PUT .../payments` with body `[]` sets the live value to a real empty array and responds `[]`; the following `GET` also returns `[]`. Confirmed live for both `payments` and `dispute-responses` — same CRUD route shape in `mocks/payment-service.json` (`type: "crud"`, one `databucketID` each), same result.
+
+**Consequence: no edit to `mocks/payment-service.json`, no Mockoon restart.** Both reset routes come free from the existing `crud` route type. `scripts/reset.py::_clear_mockoon_bucket` calls `PUT .../<bucket>` with `json=[]`; nothing in the Mockoon collection changed.
+
+**Why this almost looked like a per-bucket bug instead of a version issue.** A full `--yes` run purges every AgentCore Memory event one `delete_event` call at a time (see below) — slow enough that a first attempt was killed mid-run by session/task cleanup after finishing memory, fairness, the kill switch, the ramp clear, and the `payments` bucket, but before reaching `dispute-responses` (next in `MOCKOON_BUCKETS` iteration order). An independent check afterward correctly found `payments` empty and `dispute-responses` still populated, which reads exactly like "the two buckets are configured differently" — they are not; `mocks/payment-service.json`'s `payments` and `dispute-responses` routes are structurally identical (`crud` type, one databucket each, differing only in `endpoint`/`databucketID`/`crudKey`). Re-running the script to completion (this time to a finished process, not one that got torn down mid-run) cleared both. The lesson is about run duration, not route configuration — see the note below.
+
+**One `delete_event` API call per memory event was slow enough to matter on stage — measured, then fixed 2026-09-04 (fix round 1).** There is no batch-delete on this `bedrock-agentcore` data plane, so `_purge_memory` still issues one `delete_event` call per event, but no longer sequentially. It now runs them through `asyncio.gather` over `asyncio.to_thread`-wrapped calls, bounded by a shared `asyncio.Semaphore(12)` across all tenants at once (not per-tenant — firing 12 tenants × 12 in-flight each would still risk throttling the account). Measured directly, same events, same account, back to back:
+
+| | 100 events | rate |
+|---|---|---|
+| sequential (before) | 38.9s | ~389ms/event |
+| concurrent, 12 in flight (after) | 9.6s | ~96ms/event |
+
+~4x wall-clock speedup, not the naive 12x, because per-call latency dominates and 12 concurrent calls still queue behind the same account-level API — but it turns the 432-event, multi-minute purge observed on 2026-09-04 into well under a minute. `MEMORY_DELETE_CONCURRENCY = 12` in `scripts/reset.py` is deliberately conservative; raise it only after confirming AWS isn't throttling at the higher value.
+
+**Three more gaps closed in the same fix round, all about what happens when something goes wrong mid-run** (the part that matters for a destructive script run between live deliveries):
+- The printed dry-run plan now marks the fairness/kill-switch/ramp/Mockoon lines `(global — ignores --tenant)`, so `--tenant` never implies those four are scoped too.
+- `_clear_mockoon_bucket`'s `PUT` is now wrapped in `try`/`except httpx.HTTPError` at the call site in `main()`: if Mockoon dies in the multi-minute window between the reachability snapshot and the actual clear (the first, killed run above is proof this window is real, not hypothetical), the bucket is reported "NOT cleared" and the script still reaches its summary — fairness/kill-switch/ramp having already been reset is not blocked on Mockoon's health.
+- The exit code no longer treats "Mockoon unreachable" as success. `remaining_mockoon`'s three states — emptied (`0`), still-populated (`>0`), unreachable (`None`) — are checked explicitly; the latter two both warn loudly and return exit `1`, because the whole point of running `reset` is to know the demo is actually clean.
+
+## 2026-09-07 — E8.2 T4: `scripts/preflight.py` — API shapes, and a payment-counter assumption corrected live
+
+**AgentCore Gateway/Runtime status resolved by matching, not by parsing an id out of the configured URL/ARN.** `.env` holds `AGENTCORE_GATEWAY_URL` (a URL) and `AGENTCORE_RUNTIME_ENDPOINT` (an ARN), but `GetGateway` wants a `gatewayIdentifier` and `GetAgentRuntime` wants an `agentRuntimeId`. Parsing an identifier out of either string would be guessing at a format AWS never promised (CLAUDE.md §11). Verified against the live `bedrock-agentcore-control` service model and a real call in this account instead:
+
+- `ListGateways`' own items do **not** carry `gatewayUrl` (only `gatewayId`/`name`/`status`/etc. — checked both the botocore service model and a live response). Getting the URL to match against requires one `GetGateway(gatewayIdentifier=...)` call per listed gateway — still entirely read-only.
+- `ListAgentRuntimes`' own items **do** carry both `agentRuntimeArn` and `status` directly, so Runtime needs no per-row `GetAgentRuntime` call at all — a real asymmetry between the two AgentCore control-plane APIs, not an oversight in the preflight code.
+- Two distinct failure modes reported for each, per the same ruling: no row's URL/ARN matches the configured value → "config is stale or points at another account/region"; a match with a non-`READY` status → the resource itself is unhealthy. Both verified live via scratch invocations with a bogus URL/ARN (see below).
+
+**Bedrock model ids in `.env` are cross-region inference profile ids** (`us.anthropic.claude-sonnet-5`, `us.amazon.nova-pro-v1:0`), resolved via `bedrock.get_inference_profile(inferenceProfileIdentifier=...)`, not `get_foundation_model` (which is for base foundation model ids, a different identifier space). Confirmed live: both resolve to `ACTIVE`.
+
+**SSO token lifetime**, confirmed on this machine rather than assumed: the profile in `AWS_PROFILE` maps to an `sso_session` name in `~/.aws/config`; `sha1(sso_session_name)` matches the real cache filename under `~/.aws/sso/cache/`; `expiresAt` is ISO-8601 with a trailing `Z`, which Python 3.12's `datetime.fromisoformat` parses natively (no manual `.replace("Z", "+00:00")` needed, unlike on 3.10).
+
+**`app.temporal_client.bedrock_session()` is a generic profile-aware `boto3.Session` factory** despite its Bedrock-flavored name — reused directly for every AWS client preflight needs (STS, DynamoDB, S3, Bedrock, `bedrock-agentcore-control`) rather than writing a fifth copy of the profile-session pattern already duplicated across `repository.py`, `memory.py`, `reset.py`, and `temporal_client.py` itself.
+
+**A generic `except Exception` fallback is not an actionable remediation for a credential failure, and the live SSO expiry during this task's own verification proved it.** The token expired mid-task (see below); every AWS-backed check downstream of "AWS credentials" initially fell through to the generic per-check crash handler with "investigate the traceback" — not what CLAUDE.md's own credential-expiry pain (§4, and this task's brief) asks for from *every* check, only from the one check whose job is to diagnose it. Fixed by adding `_credentials_fail()`, which catches `botocore.exceptions.BotoCoreError` (the shared base for credential-chain failures like `TokenRetrievalError`/`NoCredentialsError`, distinct from `ClientError`, a request the service itself rejected) in every AWS-backed check and reports "downstream of the AWS credentials check above" instead of its own diagnosis. This is a real instance of the failure this whole script exists to catch, discovered by the script catching it on itself.
+
+**Payment-counter baseline: corrected from a wrong first assumption, from live observation, not restored to it by re-reading the brief.** First pass assumed the "ready" baseline was `1`, reasoning that `scripts/seed_demo.py`'s `INV-6742` scenario settles and calls `issue_payment` for real (`INV-6610` holds and pays nothing), so a `make demo-prepare` run leaves exactly one real payment. That is true immediately after `demo-prepare` — but Mockoon's payments bucket is process-local, in-memory state that does **not** survive a Mockoon restart, unlike AgentCore Memory (AWS-durable, survives everything). Live evidence, 2026-09-07: after an unrelated worker/API restart (to pick up a refreshed SSO token), `curl localhost:3001/payments` read `[]` (0) while `recall_tenant_memory("acme")` still returned both seeded events — proof the two data stores have different restart lifecycles, discovered by the coordinator's "should be green, no surprises" claim not matching the script's own FAIL. Reverted `EXPECTED_SEEDED_PAYMENT_COUNT` to `0`, the value the original task brief actually specified — the value stable across a Mockoon restart, not the value observed in one narrow post-seed snapshot.
+
+**Fault-injection evidence (scratch only, nothing committed), run from `/tmp/preflight_fault_test.py`, deleted after use:** bogus DynamoDB table name → `ResourceNotFoundException`; bogus AgentCore Memory id → `ValidationException` (fails the id's regex, not a 404 — still surfaced as a clean FAIL); wrong (closed) API/Mockoon ports → connection-refused; bogus S3 bucket name → `404 Not Found`; a Gateway URL matching no gateway; a Runtime ARN matching no runtime; a fabricated `RoutingStatus` with the wrong current version; a fabricated Temporal-unreachable error; fairness OFF / kill switch armed via `unittest.mock.patch` on the `repo` read functions (no real DynamoDB write); an active ramp via a fabricated `RoutingStatus`; a payment-counter mismatch and a seeded-memory-insufficient case via patching the check's own module-level expectation constants (no real Mockoon/Memory write); and a demo-critical `.env` field blanked via a patched `Settings` constructor. All 15 confirmed FAIL with a specific, non-generic remediation. None touched the human's live worker/API/Mockoon/UI processes or wrote to real AWS/Mockoon state — every AWS "fault" was a read against a nonexistent identifier (inherently side-effect-free), every "state" fault was mocked or passed as a plain function argument, and the two ports used were unused scratch ports (59999/59998), not the real 8000/3001.

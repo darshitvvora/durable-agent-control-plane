@@ -19,6 +19,9 @@ export default function App() {
   const [status, setStatus] = useState<FleetStatus | null>(null);
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  // Set by RunSession when a session is launched from the browser. While it is
+  // set the terminal follows *that* session and auto-follow is off (E8.1 T0).
+  const [pinnedJobId, setPinnedJobId] = useState<string | null>(null);
   const [busyAgent, setBusyAgent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,16 +44,40 @@ export default function App() {
     }
   }, []);
 
+  // Self-scheduling, not setInterval: setInterval fires on a fixed clock
+  // regardless of whether the previous call finished, so a slow response
+  // (metrics/status has been observed at 2.5s+ even against an idle stack)
+  // causes requests to pile up faster than they drain — the whole API wedges
+  // (docs/DECISIONS.md, E8.1 T5's API-side counterpart). Scheduling the next
+  // call only after this one resolves means POLL_MS is the *gap* between
+  // calls, not a fixed cadence that ignores how long the last one took.
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(timer);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const loop = async () => {
+      await refresh();
+      if (cancelled) return;
+      timer = setTimeout(loop, POLL_MS);
+    };
+    void loop();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [refresh]);
 
-  // Follow the selected tenant's newest job — that is the session on screen.
+  // Follow the selected tenant's newest job — that is the session on screen —
+  // but only while nothing is pinned. A session the operator started explicitly
+  // must not be yanked away by a flood job arriving two seconds later: that
+  // tears down a *live* EventSource mid-session (observed at readyState 1,
+  // right after job_started), so `job_finished` never arrives and the pane
+  // reads on stage as "the stream died". Root cause of E8.1 T0; see
+  // docs/DECISIONS.md (2026-09-04).
+  // Same non-overlapping self-scheduling as the poll above.
   useEffect(() => {
-    if (!tenantId) return;
+    if (!tenantId || pinnedJobId) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const pick = async () => {
       try {
         const jobs = await api.jobs(tenantId);
@@ -61,13 +88,47 @@ export default function App() {
         /* the strip already surfaces API failure */
       }
     };
-    void pick();
-    const timer = setInterval(() => void pick(), POLL_MS);
+    const loop = async () => {
+      await pick();
+      if (cancelled) return;
+      timer = setTimeout(loop, POLL_MS);
+    };
+    void loop();
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
     };
-  }, [tenantId]);
+  }, [tenantId, pinnedJobId]);
+
+  // The pinned session, resolved once. The Job row is written before
+  // POST /api/jobs returns, but DynamoDB reads are eventually consistent, so a
+  // first fetch can still 404 — retry rather than silently leave the pane on
+  // the previous session.
+  useEffect(() => {
+    if (!pinnedJobId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const resolve = async () => {
+      try {
+        const pinned = await api.job(pinnedJobId);
+        if (!cancelled) setJob(pinned);
+      } catch {
+        if (!cancelled) timer = setTimeout(resolve, 500);
+      }
+    };
+    void resolve();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [pinnedJobId]);
+
+  // Picking a tenant releases the pin — otherwise the first browser-started
+  // session freezes the pane forever and clicking a lane does nothing.
+  const selectTenant = useCallback((next: string) => {
+    setPinnedJobId(null);
+    setTenantId(next);
+  }, []);
 
   const tenant = tenants.find((t) => t.tenant_id === tenantId) ?? null;
 
@@ -116,13 +177,18 @@ export default function App() {
             status={status}
             tenants={tenants}
             tenant={tenantId}
-            onTenantChange={setTenantId}
+            onTenantChange={selectTenant}
             onChanged={refresh}
           />
         </div>
         <div className="grid min-h-0 grid-rows-2 gap-2">
-          <ProcessMonitor lanes={lanes} selected={tenantId} onSelect={setTenantId} />
-          <SessionTerminal job={job} />
+          <ProcessMonitor lanes={lanes} selected={tenantId} onSelect={selectTenant} />
+          <SessionTerminal
+            job={job}
+            agents={agents}
+            tenantId={tenantId}
+            onStarted={setPinnedJobId}
+          />
         </div>
       </main>
     </div>

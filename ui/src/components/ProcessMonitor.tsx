@@ -2,6 +2,21 @@ import { useLayoutEffect, useRef } from "react";
 import type { Lane } from "../types";
 import { Panel, Well } from "./Panel";
 
+/**
+ * `htop` for tenants — one lane per tenant, busiest first.
+ *
+ * Every column is a real call, not a sample: `running` is Temporal's own
+ * visibility store (count_workflows grouped by the TenantId search
+ * attribute), `queued` is the job index in DynamoDB, and `p95` is measured
+ * queue wait — the gap between a job being submitted and a worker picking it
+ * up. p95 is the number proof 1 turns on: with fairness on, a flooding
+ * tenant's own p95 climbs while everyone else's holds flat.
+ *
+ * `w1.0` / `w3.0` is the tenant's fairness weight, straight from the
+ * registry: weight 3 gets roughly three times the share of weight 1 when
+ * both are contending.
+ */
+
 /** FLIP: when a lane re-sorts (proof 1's "lane overtaking"), ease the row to
  * its new position instead of letting it snap there silently. */
 function useLaneFlip(order: string[]) {

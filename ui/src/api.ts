@@ -19,7 +19,14 @@ export const api = {
   lanes: () => get<Lane[]>("/api/metrics/lanes"),
   status: () => get<FleetStatus>("/api/metrics/status"),
   jobs: (tenantId: string) => get<Job[]>(`/api/jobs?tenant_id=${encodeURIComponent(tenantId)}`),
+  job: (jobId: string) => get<Job>(`/api/jobs/${encodeURIComponent(jobId)}`),
   jobState: (jobId: string) => get<SessionState>(`/api/jobs/${encodeURIComponent(jobId)}/state`),
+  runSession: (agentId: string, tenantId: string, prompt: string) =>
+    post<{ job_id: string }>(
+      `/api/jobs?agent_id=${encodeURIComponent(agentId)}&tenant_id=${encodeURIComponent(
+        tenantId,
+      )}&prompt=${encodeURIComponent(prompt)}`,
+    ),
 
   install: (tenantId: string, agentId: string) =>
     post<Tenant>(
@@ -30,6 +37,8 @@ export const api = {
       `/api/tenants/${encodeURIComponent(tenantId)}/uninstall?agent_id=${encodeURIComponent(agentId)}`,
     ),
 
+  // Demo controls. Each one mutates real Temporal or AWS state — see
+  // SystemControls.tsx for what each proves.
   setFairness: (enabled: boolean) => post<{ enabled: boolean }>(`/api/demo/fairness?enabled=${enabled}`),
   flood: (tenantId: string, count: number) =>
     post<{ submitted: number }>(

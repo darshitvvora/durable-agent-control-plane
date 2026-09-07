@@ -6,7 +6,6 @@ publishes an agent without touching workflow or UI code.
 
 import asyncio
 import shutil
-import uuid
 from typing import NoReturn
 
 import typer
@@ -233,17 +232,16 @@ def agent_test(
 
 async def _run_test(agent_id: str, prompt: str, tenant: str) -> None:
     from app.config import get_settings
-    from app.registry.priority import resolve_priority, tenant_search_attributes
+    from app.registry.priority import resolve_priority
     from app.temporal_client import connect
     from app.workflows.agent_job import AgentJobWorkflow
-    from app.workflows.models import AgentJobInput
 
     problems = validate_package(agent_id)
     if problems:
         _fail(f"{agent_id} is not valid — run `dos agent validate {agent_id}` first")
 
     try:
-        priority = resolve_priority(tenant)
+        resolve_priority(tenant)
     except ValueError as e:
         _fail(str(e))
 
@@ -251,24 +249,13 @@ async def _run_test(agent_id: str, prompt: str, tenant: str) -> None:
     repo.put_agent_package(to_package(manifest, sop))
 
     settings = get_settings()
-    job_id = f"dos-test-{agent_id}-{uuid.uuid4().hex[:6]}"
-    client = await connect()
 
+    from app.sessions import start_session
+
+    job_id = await start_session(manifest.id, tenant, prompt)
     typer.echo(f"running {job_id} on {settings.temporal_namespace}...")
-    handle = await client.start_workflow(
-        AgentJobWorkflow.run,
-        AgentJobInput(
-            job_id=job_id,
-            tenant_id=tenant,
-            agent_id=manifest.id,
-            agent_version=manifest.version,
-            prompt=prompt,
-        ),
-        id=job_id,
-        task_queue=settings.task_queue,
-        priority=priority,
-        search_attributes=tenant_search_attributes(tenant),
-    )
+    client = await connect()
+    handle = client.get_workflow_handle_for(AgentJobWorkflow.run, job_id)
     outcome = await handle.result()
     typer.echo(f"  stop_reason = {outcome.stop_reason}")
     typer.echo(f"  output      = {outcome.output.strip()}")
