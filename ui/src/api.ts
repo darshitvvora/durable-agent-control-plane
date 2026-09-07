@@ -37,6 +37,8 @@ export const api = {
       `/api/tenants/${encodeURIComponent(tenantId)}/uninstall?agent_id=${encodeURIComponent(agentId)}`,
     ),
 
+  // Demo controls. Each one mutates real Temporal or AWS state — see
+  // SystemControls.tsx for what each proves.
   setFairness: (enabled: boolean) => post<{ enabled: boolean }>(`/api/demo/fairness?enabled=${enabled}`),
   flood: (tenantId: string, count: number) =>
     post<{ submitted: number }>(

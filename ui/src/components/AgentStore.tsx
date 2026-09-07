@@ -1,6 +1,28 @@
 import type { AgentPackage, Tenant } from "../types";
 import { Panel, Well } from "./Panel";
 
+/**
+ * App store / package manager. Lists every *published* agent, and installs
+ * them per tenant.
+ *
+ * The two concepts a reader needs:
+ *
+ * - **Publishing** is `dos agent publish <id>`, which writes an agent's
+ *   manifest + SOP into DynamoDB. An agent is a directory under `agents/`
+ *   (`manifest.yaml` + `procedure.sop.md`), never a code change — which is
+ *   why this component has no per-agent branches in it.
+ * - **Installing** grants one tenant access to one agent. Publishing makes an
+ *   agent exist; installing decides who may run it.
+ */
+
+/**
+ * Tier is how much of the agent this control plane runs itself:
+ *   1 — SOP prompt only, no tools
+ *   2 — SOP plus tools, each tool call dispatched as its own Temporal activity
+ *   3 — someone else's agent loop, hosted on AgentCore Runtime; we invoke it
+ *       once and get durability, fair queueing and retries around it, but no
+ *       token stream or per-tool gating (that boundary is not ours)
+ */
 const TIER_LABEL: Record<string, string> = {
   "1": "No-code",
   "2": "Tools",
@@ -56,6 +78,9 @@ export function AgentStore({
                 <span className="font-mono text-[14px] text-ink-dim">
                   tier {agent.tier} · {TIER_LABEL[agent.tier] ?? "—"}
                 </span>
+                {/* "gated" = the manifest declares an approval policy, so one
+                    of this agent's tools pauses mid-session for a human above
+                    a threshold. The session costs nothing while it waits. */}
                 {agent.approval_policy && (
                   <span className="font-mono text-[14px] text-signal">gated</span>
                 )}

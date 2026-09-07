@@ -3,6 +3,17 @@ import { api } from "../api";
 import type { FleetStatus, Tenant } from "../types";
 import { Panel, Well } from "./Panel";
 
+/**
+ * Settings / task manager — the four levers that drive the three proofs.
+ *
+ * Every one of them mutates real Temporal or AWS state through the API (the UI
+ * never talks to Temporal itself). Nothing here is simulated:
+ *
+ * - fairness → Temporal Task Queue Fairness (proof 1)
+ * - flood    → real agent sessions, to create the queue pressure proof 1 needs
+ * - ramp     → Worker Deployment version routing (proof 2)
+ * - kill     → arms a real worker crash at a tool boundary (proof 3)
+ */
 export function SystemControls({
   status,
   tenants,
@@ -78,6 +89,13 @@ export function SystemControls({
   return (
     <Panel title="System Controls" className="min-h-0">
       <Well className="flex-1 space-y-4 overflow-auto">
+        {/* Proof 1. Fairness is not a Temporal Cloud switch — it engages the
+            moment a job attaches a fairness_key. "OFF" therefore means this
+            control plane stops attaching one when it starts a job, so every
+            tenant shares the implicit empty key and the queue degrades to
+            FIFO within a priority tier:
+            one tenant's flood then delays everyone else's. See
+            app/registry/priority.py::resolve_priority. */}
         <div>
           <p className="font-display text-[13px] font-bold tracking-[0.18em] text-ink-dim uppercase">
             Task queue fairness
@@ -97,6 +115,10 @@ export function SystemControls({
           </div>
         </div>
 
+        {/* Submits N real agent jobs for one tenant, to create the queue
+            pressure proof 1 measures. The flood agent is tier 1 (toolless) so
+            it generates load without competing for AgentCore capacity with
+            whatever else is running. */}
         <div className="border-t border-[#2c2c22] pt-3">
           <p className="font-display text-[13px] font-bold tracking-[0.18em] text-ink-dim uppercase">
             Flood a tenant
@@ -131,6 +153,11 @@ export function SystemControls({
           </p>
         </div>
 
+        {/* Proof 2. Shifts a percentage of NEW sessions to a different worker
+            build. Sessions already in flight never move: AgentJobWorkflow is
+            PINNED, so each run finishes on the build it started on, however
+            far the ramp moves underneath it. That is the whole proof — a
+            deploy mid-reasoning loses no reasoning. */}
         <div className="border-t border-[#2c2c22] pt-3">
           <p className="font-display text-[13px] font-bold tracking-[0.18em] text-ink-dim uppercase">
             Worker deployment ramp
@@ -165,6 +192,12 @@ export function SystemControls({
           </div>
         </div>
 
+        {/* Proof 3. Arms a flag, kills nothing yet — the worker exits at the
+            worst possible moment for it: after the payment API call has
+            really succeeded, but before Temporal has recorded the activity as
+            complete. Temporal must therefore retry it, and only the DynamoDB
+            idempotency key stops the money moving twice. Restart the worker
+            by hand; the Payments readout should still read 1. */}
         <div className="border-t border-[#2c2c22] pt-3">
           <p className="font-display text-[13px] font-bold tracking-[0.18em] text-ink-dim uppercase">
             Kill worker
