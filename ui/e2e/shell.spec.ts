@@ -162,3 +162,51 @@ test("four consecutive sessions on one page all stream", async ({ page }) => {
 
   for (let round = 0; round < 4; round++) await runOneSession(round);
 });
+
+// Found during E8.1 T2's first timed rehearsal, on the real stack: beat 0's
+// session completed correctly on the worker and in Event History, but the pane
+// read `— waiting for output (completed)` and showed nothing. The stream was
+// never at fault. Changing the tenant — the dropdown in System Controls, or a
+// click on a Process Monitor lane, both `selectTenant` — released the pin on a
+// *live* session, auto-follow re-targeted the newly selected tenant's newest
+// job, and `setEntries([])` wiped the transcript already on screen.
+//
+// Unrecoverable, which is what makes it a stage defect rather than a blemish:
+// Workflow Streams is a live log, not durable history, so a finished session
+// has nothing left to replay. Re-running the beat is the only way back.
+//
+// The operator must still be able to look at another tenant's lane mid-session,
+// so the fix keeps the selection working for every other pane and only refuses
+// to abandon the transcript.
+test("a live session survives a tenant change", async ({ page }) => {
+  await page.goto("/");
+
+  const session = page.getByRole("heading", { name: "Session", exact: true }).locator("xpath=../..");
+
+  // Tenant selection is a Process Monitor lane click — System Controls' own
+  // combobox now targets only the flood (see SystemControls.tsx).
+  await page.getByRole("row", { name: /^initech/ }).click();
+  await session.getByRole("combobox").selectOption({ label: "Returns Triage · tier 1" });
+  await session
+    .getByPlaceholder("Prompt for this session")
+    .fill("Order A-2001, unopened, 5 days since delivery.");
+
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/jobs",
+    ),
+    session.getByRole("button", { name: "Run" }).click(),
+  ]);
+  const { job_id: jobId } = (await response.json()) as { job_id: string };
+
+  const well = session.locator(`[data-job-id="${jobId}"]`);
+  await expect(well).toContainText("session started — returns-triage", { timeout: 90_000 });
+
+  // The stray click a presenter makes while narrating. Before the fix this
+  // swapped the pane onto acme's newest job and cleared the transcript.
+  await page.getByRole("row", { name: /^acme/ }).click();
+
+  // Still this session, still its transcript, still runs to completion.
+  await expect(well).toContainText("session started — returns-triage");
+  await expect(well).toContainText("session finished", { timeout: 120_000 });
+});

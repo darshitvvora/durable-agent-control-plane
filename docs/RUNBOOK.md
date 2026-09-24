@@ -72,7 +72,9 @@ Keep a **fifth terminal free** for demo controls (`make preflight`, `make demo-f
 
 **Order matters in one place:** Mockoon before the worker. The worker's first payment or dispute call fails against a dead Mockoon, and while Temporal retries it cleanly, the retry is visible noise you don't want mid-beat.
 
-**After any `aws sso login`, restart the worker.** This app's boto3 sessions are `lru_cache`d, so a worker started with a dead token keeps using it even after you re-login. This has bitten this project repeatedly — see §6.
+**All four terminals come up before §4's reset-and-seed, not after.** `make demo-seed` starts two *real* workflows, so with no worker polling the task queue they sit at `WorkflowTaskScheduled` and the command simply hangs with no error — the same silent hang §6 lists for a stale deployment version, reached through setup ordering instead. Worse than a lost minute: the abandoned jobs keep accruing queue wait, and because p95 is windowed by sample count they stay in the window. One such job pinned acme's p95 at **923s** during E8.1 T2's rehearsal, which is proof 1's protected tenant. If a seed ever hangs, start the worker, then re-run `make demo-prepare` from the top rather than just `make demo-seed`.
+
+**After any `aws sso login`, restart the worker _and_ the API.** Both cache their boto3 sessions with `lru_cache`, so either one started with a dead token keeps using it after you re-login. The API is easy to forget because the UI dev server stays up and the page still renders — it just answers 500 on every `/api/*` route, which reads like a broken UI rather than a credential problem (observed 2026-09-16). The UI and Mockoon need no restart; neither holds AWS credentials. This has bitten this project repeatedly — see §6.
 
 ---
 
@@ -104,7 +106,10 @@ temporal worker deployment set-current-version \
 ```bash
 make demo-reset            # dry run first — prints exactly what it will delete
 make demo-prepare          # reset --yes, then seed
+# then restart Mockoon (Ctrl-C terminal 1, `make mockoon`) — see below
 ```
+
+**Restart Mockoon after seeding.** Prepare necessarily ends with the payment counter at **1**, because seeding's `INV-6742` scenario settles for real; preflight expects **0** and will FAIL on an otherwise-ready stack. Restarting Mockoon zeroes its process-local payments bucket while leaving the seeded AgentCore Memory events untouched, which is what makes beat 1's "the counter still reads 1" line true. Never resolve this by re-running `demo-prepare`: that purges the seed and re-creates the payment.
 
 `make demo-prepare` does two things, in order:
 
@@ -126,7 +131,7 @@ make preflight
 
 Nothing in it mutates state, so it is safe to run repeatedly, including seconds before you walk on. Every non-PASS row prints its own `fix:` line.
 
-**Exit 0 with zero FAIL is the go/no-go gate.** WARN rows are judgement calls; the one you will see most is the SSO token dropping below its two-hour margin, which is a real signal — re-login and restart the worker rather than hoping.
+**Exit 0 with zero FAIL is the go/no-go gate.** WARN rows are judgement calls; the one you will see most is the SSO token dropping below its two-hour margin, which is a real signal — re-login and restart the worker and the API rather than hoping.
 
 ### T−2 — final credential check
 
@@ -134,7 +139,7 @@ Nothing in it mutates state, so it is safe to run repeatedly, including seconds 
 make preflight   # again, for the SSO row alone
 ```
 
-An expired SSO token kills Bedrock, all four AgentCore services, DynamoDB and the sandbox **simultaneously**, because they share one credential chain. It expired three times in a single development day. If the token is anywhere near its margin, `aws sso login` and restart the worker now — it costs 30 seconds here and the whole demo on stage.
+An expired SSO token kills Bedrock, all four AgentCore services, DynamoDB and the sandbox **simultaneously**, because they share one credential chain. It expired three times in a single development day, and again mid-rehearsal on 2026-09-16 roughly an hour after a preflight WARN reported the margin. If the token is anywhere near its margin, `aws sso login` and restart the worker and the API now — it costs 30 seconds here and the whole demo on stage. For a 13-minute run, walk on with hours of headroom, not minutes.
 
 ### T−0 — the cold open
 
@@ -181,11 +186,13 @@ Ordered roughly by how likely you are to hit them.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Everything AWS-shaped fails at once — Bedrock, Memory, Gateway, sandbox, DynamoDB | **AWS SSO token expired.** One credential chain backs all of them | `aws sso login --profile <profile>`, then **restart the worker** — boto3 sessions are `lru_cache`d, so a running worker keeps using the dead token |
+| Everything AWS-shaped fails at once — Bedrock, Memory, Gateway, sandbox, DynamoDB | **AWS SSO token expired.** One credential chain backs all of them | `aws sso login --profile <profile>`, then **restart the worker _and_ the API** — both `lru_cache` their boto3 sessions, so either keeps using the dead token |
+| The page renders but every panel is empty or errors, and the UI itself seems fine | Same expired token, seen from the front end: the Vite dev server holds no credentials so it stays up, while the API answers 500 from DynamoDB | Check `make preflight`'s credentials row first, not the UI. Re-login, restart worker **and** API |
 | Workflows start but sit forever at `WorkflowTaskScheduled`, no error anywhere | Worker deployment version is not `current` for this `BUILD_ID` | `temporal worker deployment set-current-version --deployment-name agent-control-plane --build-id <BUILD_ID>`. `make preflight` prints this |
 | Per-tenant lanes render `?` instead of counts | `TenantId` search attribute missing on the namespace | One-time `tcld namespace search-attributes add` — see `docs/AWS_SETUP.md` |
 | Payment or dispute activity retrying visibly | Mockoon not running, or the wrong collection loaded | `make mockoon`; `make preflight`'s Mockoon row checks all three route families |
-| Payment counter reads a number you don't expect | Mockoon's bucket is **process-local, in-memory state** — it does not survive a Mockoon restart, unlike AgentCore Memory | Expected baseline before the show is **0**. `make demo-prepare` clears it; a Mockoon restart also zeroes it |
+| Payment counter reads **1** right after `make demo-prepare`, and preflight FAILs | Correct, not a fault: prepare is reset (bucket → 0) **then** seed, and seeding's `INV-6742` scenario settles for real | **Restart Mockoon** (`make mockoon`). The bucket is process-local in-memory state so it zeroes; AgentCore Memory is AWS-durable so the seeded recall survives. Do **not** follow preflight's own advice to re-run `demo-prepare` — that purges the seed and re-creates the payment |
+| Payment counter reads some other unexpected number | Residual payments from an earlier round | Expected baseline before the show is **0**. Restart Mockoon, or `make demo-reset ARGS="--yes"` if you also want job rows and memory cleared (then re-seed) |
 | Beat 0's memory recall surfaces `checkout-api` incident noise | Reset ran without a re-seed, or didn't run at all | `make demo-prepare` |
 | Fairness ON and OFF look the same | Previous round's job rows still in the 200-sample p95 window | `make demo-reset ARGS="--yes"` between rounds |
 | Worker exits unexpectedly at a tool call | Kill switch left **armed** from a previous run | `make demo-reset ARGS="--yes"` disarms it. `make preflight` flags it as a FAIL |

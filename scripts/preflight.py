@@ -216,11 +216,14 @@ async def check_aws_credentials(settings: Settings) -> CheckResult:
     restart_note = (
         "run `aws sso login`"
         + (f" --profile {settings.aws_profile}" if settings.aws_profile else "")
-        + ", then RESTART THE WORKER (`make worker`) — this app's boto3 sessions "
-        "are `lru_cache`d, so a worker that was already running keeps using the "
-        "dead credentials even after you re-login. This single token backs "
-        "Bedrock, all four AgentCore services, DynamoDB and the sandbox, so "
-        "letting it expire kills every beat of the demo simultaneously."
+        + ", then RESTART BOTH THE WORKER AND THE API (`make worker`, `make api`) — "
+        "this app's boto3 sessions are `lru_cache`d, so a process that was already "
+        "running keeps using the dead credentials even after you re-login. The API "
+        "needs it as much as the worker: observed 2026-09-16, an expired token had "
+        "the worker failing activities and every `/api/*` route answering 500 from "
+        "DynamoDB, while the UI dev server stayed up and looked healthy. This single "
+        "token backs Bedrock, all four AgentCore services, DynamoDB and the sandbox, "
+        "so letting it expire kills every beat of the demo simultaneously."
     )
 
     try:

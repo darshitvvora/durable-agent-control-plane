@@ -45,6 +45,7 @@ from typing import Any
 
 import boto3
 import httpx
+from botocore.config import Config as BotoConfig
 
 from app.config import get_settings
 from app.demo import clear_ramp
@@ -82,7 +83,15 @@ def _agentcore_client() -> Any:
         if settings.aws_profile
         else boto3.Session(region_name=settings.aws_region)
     )
-    return session.client("bedrock-agentcore")
+    # Adaptive retries with a high attempt count, because the purge is a burst
+    # of DeleteEvent calls and AgentCore rate-limits them. botocore's default
+    # (4 attempts, `legacy` mode) gave up mid-purge on a 445-event reset and
+    # left the demo half-cleaned; `adaptive` adds client-side rate limiting
+    # that backs off instead of hammering. See docs/DECISIONS.md, 2026-09-21.
+    return session.client(
+        "bedrock-agentcore",
+        config=BotoConfig(retries={"max_attempts": 10, "mode": "adaptive"}),
+    )
 
 
 def _memory_events(tenant_id: str) -> list[dict]:
@@ -112,7 +121,13 @@ def _memory_events(tenant_id: str) -> list[dict]:
             return events
 
 
-MEMORY_DELETE_CONCURRENCY = 12  # bounded so 432 events don't fire as 432 concurrent AWS calls
+# Bounded so a few hundred events don't fire as a few hundred concurrent AWS
+# calls. Lowered 12 -> 5 on 2026-09-21: 12 throttled outright on a 445-event
+# purge (ThrottledException, "Rate exceeded", after botocore's retries), which
+# aborted the reset with the demo half-cleaned. The DeleteEvent rate limit is
+# the binding constraint here, not local parallelism, so the extra in-flight
+# calls bought nothing once AWS started refusing them.
+MEMORY_DELETE_CONCURRENCY = 5
 
 
 async def _purge_memory(tenant_id: str, semaphore: asyncio.Semaphore) -> int:
