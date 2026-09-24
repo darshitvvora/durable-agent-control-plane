@@ -17,17 +17,20 @@ import { Panel, Well } from "./Panel";
 export function SystemControls({
   status,
   tenants,
-  tenant,
-  onTenantChange,
   onChanged,
 }: {
   status: FleetStatus | null;
   tenants: Tenant[];
-  tenant: string | null;
-  onTenantChange: (tenantId: string) => void;
   onChanged: () => void;
 }) {
   const [count, setCount] = useState(20);
+  // The flood's target is deliberately NOT the app-wide selected tenant.
+  // Sharing it meant selecting a tenant to demo — which also repoints the
+  // Agent Store, the lanes and the run control — silently aimed the flood
+  // there too, and one click then dumped 20 load-test jobs into the tenant
+  // whose recalled memory the demo's opening beat depends on. That happened
+  // on a real recording take (E8.1 T2). Defaults to the flooder tenant.
+  const [floodTenant, setFloodTenant] = useState<string | null>(null);
   const [rampBuildId, setRampBuildId] = useState("");
   const [rampPercent, setRampPercent] = useState(25);
   const [busy, setBusy] = useState(false);
@@ -44,11 +47,18 @@ export function SystemControls({
     }
   };
 
+  // Whoever the registry says is least protected is the one you flood — the
+  // flood exists to starve *other* tenants, so the flooder must be the one
+  // fairness weights least. Read from the registry, never hardcoded
+  // (CLAUDE.md §11).
+  const flooder = [...tenants].sort((a, b) => a.fairness_weight - b.fairness_weight)[0];
+  const floodTarget = floodTenant ?? flooder?.tenant_id ?? null;
+
   const flood = async () => {
-    if (!tenant) return;
+    if (!floodTarget) return;
     setBusy(true);
     try {
-      await api.flood(tenant, count);
+      await api.flood(floodTarget, count);
       onChanged();
     } finally {
       setBusy(false);
@@ -126,8 +136,9 @@ export function SystemControls({
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <select
               className="sunken bg-well-hi px-2 py-2 font-mono text-[16px] text-ink"
-              value={tenant ?? ""}
-              onChange={(e) => onTenantChange(e.target.value)}
+              aria-label="flood tenant"
+              value={floodTarget ?? ""}
+              onChange={(e) => setFloodTenant(e.target.value)}
             >
               {tenants.map((t) => (
                 <option key={t.tenant_id} value={t.tenant_id}>
@@ -144,7 +155,7 @@ export function SystemControls({
               onChange={(e) => setCount(Number(e.target.value))}
               className="sunken w-24 bg-well-hi px-2 py-2 font-mono text-[16px] text-ink"
             />
-            <button className="btn" onClick={flood} disabled={busy || !tenant}>
+            <button className="btn" onClick={flood} disabled={busy || !floodTarget}>
               Run
             </button>
           </div>

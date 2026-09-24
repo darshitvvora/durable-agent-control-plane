@@ -86,6 +86,10 @@ export type SessionState = {
   history_size_bytes: number | null;
   external_payload_size_bytes: number | null;
   external_payload_count: number | null;
+  /** The session's final answer, present only once it has COMPLETED. Not on
+   *  the event stream: an agent whose manifest sets `output_model` returns a
+   *  validated object on its last turn, so there are no tokens to stream. */
+  result: string | null;
 };
 
 /** One line in the session terminal, from the SSE stream. */

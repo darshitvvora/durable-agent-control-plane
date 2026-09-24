@@ -1,6 +1,12 @@
 id: dispute-resolution
 name: Dispute Resolution
-version: 2
+# v3 (E8.1 T2): the SOP now quotes the cardholder's statement verbatim rather
+# than summarising it. Real chargeback practice — a filing is evidentiary and a
+# paraphrase weakens it — and it is also what makes the Bedrock Guardrail
+# demonstrable: with a summary, nothing the cardholder said ever reaches the
+# guarded tool, so the gate has only the agent's own measured prose to judge
+# and never fires. See docs/DECISIONS.md.
+version: 3
 
 # Tier 2 — SOP plus custom activity tools: two read-only lookups and one
 # consequential filing.

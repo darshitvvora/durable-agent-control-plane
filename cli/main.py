@@ -158,6 +158,53 @@ def agent_register_hosted(
     )
 
 
+@agent_app.command("unregister")
+def agent_unregister(
+    agent_id: str,
+    yes: bool = typer.Option(False, "--yes", help="skip the confirmation prompt"),
+) -> None:
+    """Remove every published version of an agent from the registry.
+
+    The inverse of `publish` and `register-hosted`, which had none. Needed
+    because registering an agent that is already in the store makes nothing
+    appear, so the demo's hosted-lane beat could only ever be performed once
+    per environment — not rehearsed, and not recorded twice.
+
+    Removes the tenant installs too. A dangling install would make the agent
+    read as already-installed the moment it is re-registered, which is exactly
+    the click that beat is built around.
+
+    Registry only: `agents/<id>/` on disk is untouched, so `dos agent publish`
+    puts a native package straight back. Deliberately not folded into
+    `scripts/reset.py`, which treats agent packages as fixtures.
+    """
+    versions = repo.list_agent_package_versions(agent_id)
+    if not versions:
+        _fail(f"agent {agent_id!r} is not in the registry")
+
+    installed_on = [t.tenant_id for t in repo.list_tenants() if agent_id in t.installed_agent_ids]
+    listed = ", ".join(
+        f"v{package.version}" for package in sorted(versions, key=lambda p: p.version)
+    )
+    if not yes:
+        typer.confirm(
+            f"remove {agent_id} ({listed}) from the registry"
+            + (f" and uninstall it from {', '.join(installed_on)}?" if installed_on else "?"),
+            abort=True,
+        )
+
+    for tenant_id in installed_on:
+        repo.uninstall_agent(tenant_id, agent_id)
+    for package in versions:
+        repo.delete_agent_package(agent_id, package.version)
+
+    typer.secho(
+        f"unregistered {agent_id} ({listed})"
+        + (f"; uninstalled from {', '.join(installed_on)}" if installed_on else ""),
+        fg=typer.colors.GREEN,
+    )
+
+
 @tenant_app.command("add")
 def tenant_add(
     tenant_id: str,
@@ -325,8 +372,7 @@ def demo_ramp(
         status = asyncio.run(ramp_status())
         typer.echo(f"current:  {status.current_version or '(none)'}")
         typer.echo(
-            f"ramping:  {status.ramping_version or '(none)'} "
-            f"@ {status.ramping_percentage:.0f}%"
+            f"ramping:  {status.ramping_version or '(none)'} @ {status.ramping_percentage:.0f}%"
         )
         return
 
@@ -340,7 +386,8 @@ def demo_ramp(
 @demo_app.command("kill-worker")
 def demo_kill_worker(
     at_tool_boundary: bool = typer.Option(
-        True, "--at-tool-boundary/--no-at-tool-boundary",
+        True,
+        "--at-tool-boundary/--no-at-tool-boundary",
         help="Only supported mode: crash right after the next consequential tool call succeeds",
     ),
 ) -> None:

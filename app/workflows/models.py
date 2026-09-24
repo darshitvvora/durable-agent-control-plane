@@ -49,6 +49,16 @@ class SessionState(BaseModel):
     history_size_bytes: int | None = None
     external_payload_size_bytes: int | None = None
     external_payload_count: int | None = None
+    # The session's final answer, once it has one. Only populated for a
+    # COMPLETED run — a closed workflow's result is already durable in Temporal,
+    # so reading it costs one client call and invents nothing.
+    #
+    # It is not on the event stream and deliberately not being added there: the
+    # stream carries *tokens*, and an agent whose manifest sets `output_model`
+    # returns a validated object on its last turn rather than prose, so there
+    # are no tokens to carry. Without this the session pane simply ends, and
+    # the typed-output claim has nothing on screen behind it (E8.1 T2).
+    result: str | None = None
 
 
 class UIEvent(BaseModel):

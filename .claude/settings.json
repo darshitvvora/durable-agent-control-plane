@@ -3,7 +3,12 @@
     "allow": [
       "Bash(kill -9 87715 87713)",
       "Bash(AWS_PROFILE=\"SolutionsArchitecture/AWSAdministratorAccess\" npx playwright test -g \"four consecutive sessions\")",
-      "Bash(make agent-test *)"
+      "Bash(make agent-test *)",
+      "Bash(git add *)",
+      "Bash(timeout 90 make tenant-list)",
+      "Bash(make tenant-list *)",
+      "Bash(make demo-reset *)",
+      "Bash(make preflight *)"
     ]
   }
 }

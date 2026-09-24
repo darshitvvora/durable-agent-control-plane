@@ -5,7 +5,7 @@ from app.registry import repository as repo
 from app.registry.models import Job
 from app.sessions import start_session
 from app.workflows.agent_job import AgentJobWorkflow
-from app.workflows.models import SessionState
+from app.workflows.models import JobOutcome, SessionState
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -55,7 +55,9 @@ async def get_job_state(request: Request, job_id: str) -> SessionState:
     workflow's own query.
     """
     client = request.app.state.temporal_client
-    handle = client.get_workflow_handle(job_id)
+    # result_type is set on the handle, not on result() — it is what decodes
+    # the stored payload back into a JobOutcome.
+    handle = client.get_workflow_handle(job_id, result_type=JobOutcome)
     try:
         desc = await handle.describe()
     except RPCError as e:
@@ -74,7 +76,16 @@ async def get_job_state(request: Request, job_id: str) -> SessionState:
     if desc.status is not None and desc.status.name == "RUNNING":
         pending = await handle.query(AgentJobWorkflow.pending_approval)
 
+    # The final answer, for a run that has one. `result()` on a closed
+    # workflow reads what Temporal already stored — it does not wait, and for
+    # any non-COMPLETED status there is nothing to read.
+    result: str | None = None
+    if desc.status is not None and desc.status.name == "COMPLETED":
+        outcome = await handle.result()
+        result = outcome.output
+
     return SessionState(
+        result=result,
         job_id=job_id,
         status=desc.status.name if desc.status is not None else "UNKNOWN",
         worker_version=worker_version,
