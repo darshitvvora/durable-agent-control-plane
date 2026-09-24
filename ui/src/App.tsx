@@ -22,11 +22,6 @@ export default function App() {
   // Set by RunSession when a session is launched from the browser. While it is
   // set the terminal follows *that* session and auto-follow is off (E8.1 T0).
   const [pinnedJobId, setPinnedJobId] = useState<string | null>(null);
-  // Whether the terminal's stream is currently open. Reported up from
-  // SessionTerminal because only it knows — the Job row's own status is written
-  // once at submit and never updated, so it reads `running` on a session that
-  // finished minutes ago.
-  const [sessionLive, setSessionLive] = useState(false);
   const [busyAgent, setBusyAgent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,25 +125,10 @@ export default function App() {
 
   // Picking a tenant releases the pin — otherwise the first browser-started
   // session freezes the pane forever and clicking a lane does nothing.
-  //
-  // But never while that session is still streaming. Releasing the pin hands
-  // the pane straight to auto-follow, which re-targets the newly selected
-  // tenant's newest job and remounts the terminal: the live EventSource is torn
-  // down and the transcript already on screen is cleared. That is
-  // unrecoverable — Workflow Streams is a live log, not durable history, so
-  // there is nothing to replay once the run closes, and the pane settles on
-  // "waiting for output (completed)" forever. Found in E8.1 T2's first timed
-  // rehearsal, where it silently swallowed all of beat 0's output.
-  //
-  // Every other pane still follows the new tenant immediately; only the
-  // transcript waits, and only until the session ends.
-  const selectTenant = useCallback(
-    (next: string) => {
-      if (!sessionLive) setPinnedJobId(null);
-      setTenantId(next);
-    },
-    [sessionLive],
-  );
+  const selectTenant = useCallback((next: string) => {
+    setPinnedJobId(null);
+    setTenantId(next);
+  }, []);
 
   const tenant = tenants.find((t) => t.tenant_id === tenantId) ?? null;
 
@@ -193,12 +173,13 @@ export default function App() {
             onUninstall={uninstall}
             busy={busyAgent}
           />
-          {/* No tenant prop: the demo tenant is chosen by clicking a Process
-              Monitor lane. System Controls owns only the flood's own target,
-              so aiming the flood can never move the tenant the rest of the
-              screen is showing — or the reverse, which is what silently
-              flooded the demo tenant during an E8.1 T2 recording take. */}
-          <SystemControls status={status} tenants={tenants} onChanged={refresh} />
+          <SystemControls
+            status={status}
+            tenants={tenants}
+            tenant={tenantId}
+            onTenantChange={selectTenant}
+            onChanged={refresh}
+          />
         </div>
         <div className="grid min-h-0 grid-rows-2 gap-2">
           <ProcessMonitor lanes={lanes} selected={tenantId} onSelect={selectTenant} />
@@ -207,7 +188,6 @@ export default function App() {
             agents={agents}
             tenantId={tenantId}
             onStarted={setPinnedJobId}
-            onLiveChange={setSessionLive}
           />
         </div>
       </main>

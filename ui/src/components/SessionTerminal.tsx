@@ -4,12 +4,6 @@ import type { AgentPackage, Job, SessionState } from "../types";
 import { Panel, Well } from "./Panel";
 import { RunSession } from "./RunSession";
 
-/** Render the live token stream in the session pane? Off unless
- *  `VITE_SHOW_TOKEN_STREAM=true`. The stream itself is always running; see the
- *  note where the listeners are registered for why this is a UI switch and not
- *  a worker one. */
-const SHOW_TOKEN_STREAM = import.meta.env.VITE_SHOW_TOKEN_STREAM === "true";
-
 type Entry =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string }
@@ -60,13 +54,11 @@ export function SessionTerminal({
   agents,
   tenantId,
   onStarted,
-  onLiveChange,
 }: {
   job: Job | null;
   agents: AgentPackage[];
   tenantId: string | null;
   onStarted: (jobId: string) => void;
-  onLiveChange: (live: boolean) => void;
 }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [state, setState] = useState<SessionState | null>(null);
